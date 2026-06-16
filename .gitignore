@@ -1,0 +1,14 @@
+# Python virtual environment
+backend/.venv/
+
+# Temp Files
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+backend/.env
+
+# Data Files
+backend/data/frames/
+backend/data/videos/

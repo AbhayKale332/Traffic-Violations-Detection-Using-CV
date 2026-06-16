@@ -1,0 +1,11 @@
+[
+    {
+        "id": 1,
+        "camera_code": "CAM001",
+        "extension": "webm",
+        "latitude": 12.9716,
+        "longitude": 77.5946,
+        "zone": "Zone A",
+        "source": "http://example.com/video1.webm"
+    }
+]
