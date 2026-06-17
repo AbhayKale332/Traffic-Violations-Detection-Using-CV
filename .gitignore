@@ -1,14 +1,123 @@
-# Python virtual environment
-backend/.venv/
-.venv/
-# Temp Files
-# Python cache
+# ==========================================
+# Operating System Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ==========================================
+# IDEs & Editors
+# ==========================================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+
+# ==========================================
+# Python (Backend)
+# ==========================================
+# Python cache & compiled files
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
+*.so
 
+# Virtual environments
+.venv/
+venv/
+env/
+backend/.venv/
+backend/venv/
+backend/env/
+ENV/
+**/venv/
+**/.venv/
+
+# Environment configuration (secrets)
+.env
+.env.*
 backend/.env
+backend/.env.*
 
-# Data Files
+# Distribution / Packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# ==========================================
+# Node.js & Frontend (Vite / React)
+# ==========================================
+# Dependency directories
+node_modules/
+frontend/node_modules/
+**/node_modules/
+
+# Production build outputs
+dist/
+frontend/dist/
+**/dist/
+build/
+frontend/build/
+**/build/
+
+# Vite local cache
+.vite/
+frontend/.vite/
+**/.vite/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==========================================
+# Project-Specific Data and Uploads (CV)
+# ==========================================
+# Extracted video frames and uploaded videos
 backend/data/frames/
 backend/data/videos/
+backend/data/uploads/
+data/frames/
+data/videos/
+data/uploads/
+
+# Large Model weights (e.g. YOLO, PyTorch, ONNX)
+*.pt
+*.pth
+*.weights
+*.onnx
+*.bin
+*.pb
+*.h5
+
