@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import HelmetDetection from "./components/HelmetDetection";
 import {
   AlertTriangle,
   BarChart3,
@@ -95,6 +96,7 @@ type AnalysisResult = {
 };
 
 function App() {
+  const [tab, setTab] = useState<"traffic" | "helmet">("traffic");
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isAnalyzed, setIsAnalyzed] = useState(false);
