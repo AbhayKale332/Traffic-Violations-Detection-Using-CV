@@ -1,718 +1,657 @@
-import { useMemo, useState } from "react";
+import { useState, useMemo, useCallback } from "react";
+import {
+  ShieldCheck, Upload, Loader2, X, RotateCcw, Trash2,
+  Camera, Eye, BarChart3, FileSearch, Gauge, ChevronDown,
+  Layers
+} from "lucide-react";
+import UploadPanel from "./components/UploadPanel";
+import PipelineTracker from "./components/PipelineTracker";
+import AnnotatedPreview from "./components/AnnotatedPreview";
+import MetadataPanel from "./components/MetadataPanel";
+import RecordsTable from "./components/RecordsTable";
+import AnalyticsCharts from "./components/AnalyticsCharts";
+import EvaluationCards from "./components/EvaluationCards";
+
+// Individual mode components
 import HelmetDetection from "./components/HelmetDetection";
 import TripleRiderDetection from "./components/TripleRiderDetection";
 import LicensePlateDetection from "./components/LicensePlateDetection";
 import PipelineDemo from "./components/PipelineDemo";
 import SeatbeltMobileDetection from "./components/SeatbeltMobileDetection";
-import {
-  AlertTriangle,
-  BarChart3,
-  Bike,
-  Camera,
-  Car,
-  CheckCircle2,
-  FileVideo,
-  Gauge,
-  Play,
-  ShieldCheck,
-  Upload,
-  UserRound,
-  Video,
-} from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { Button } from "./components/ui/button";
-import { Card, CardContent, CardHeader } from "./components/ui/card";
-import { cn } from "./lib/utils";
 
-const violationTypes = [
-  "Helmet violation",
-  "Seatbelt violation",
-  "Triple riding",
-  "Wrong-side driving",
-  "Stop-line violation",
-  "Red-light violation",
-  "Illegal parking",
-];
+import type {
+  PipelineStage, Prediction, PreprocessResult,
+  InferenceResult, ViolationRecord, EvaluationMetrics,
+} from "./types";
+import { loadRecords, appendRecords, computeAnalytics, clearRecords, loadEvaluationMetrics } from "./store";
 
-const detections = [
-  { label: "Motorbike", count: 3, icon: Bike },
-  { label: "Cars", count: 2, icon: Car },
-  { label: "People", count: 7, icon: UserRound },
-];
-
-const fallbackViolations = [
-  {
-    type: "Helmet violation",
-    confidence: 94,
-    timestamp: "00:04",
-    plate: "KA 05 MX 4412",
-  },
-  {
-    type: "Triple riding",
-    confidence: 89,
-    timestamp: "00:06",
-    plate: "KA 05 MX 4412",
-  },
-  {
-    type: "Stop-line violation",
-    confidence: 82,
-    timestamp: "00:11",
-    plate: "TN 09 BX 2381",
-  },
-];
-
-type Detection = {
-  label: string;
-  count: number;
+// ── Roboflow API config ────────────────────────────────────────────
+const RF_KEY = "8uvtxZId3oOxVg80LO8f";
+const MODELS = {
+  helmet: "helmet-detection-yolov8/1",
+  triple: "3riders/2",
+  seatbelt: "seat_belt-and-mobile-vbve5/1",
 };
 
-type Violation = {
-  type: string;
-  confidence: number;
-  timestamp: string;
-  plate: string;
-};
+// ── Helpers ────────────────────────────────────────────────────────
+function uid() { return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; }
 
-type AnalysisResult = {
-  frames: {
-    count: number;
-    folder_path: string;
-  };
-  detections: Detection[];
-  violations: Violation[];
-  summary: {
-    vehicles_detected: number;
-    violations_found: number;
-    plates_detected: number;
-    average_confidence: number;
-  };
-};
+function classifyViolation(cls: string): { type: string; label: string; vehicle: string } {
+  const k = cls.toLowerCase();
+  if (k.includes("no-helmet") || k.includes("no helmet"))
+    return { type: "helmet_violation", label: "Helmet violation", vehicle: "Motorcycle" };
+  if (k.includes("helmet"))
+    return { type: "other", label: "Helmet (compliant)", vehicle: "Motorcycle" };
+  if (k.includes("triple") || k.includes("more_than_two"))
+    return { type: "triple_riding", label: "Triple riding", vehicle: "Motorcycle" };
+  if (k.includes("phone") || k.includes("mobile"))
+    return { type: "phone_usage", label: "Phone usage", vehicle: "Vehicle" };
+  if (k.includes("seatbelt"))
+    return { type: "no_seatbelt", label: "No seatbelt", vehicle: "Car" };
+  if (k.includes("windshield"))
+    return { type: "other", label: "Windshield detected", vehicle: "Car" };
+  if (k.includes("rider"))
+    return { type: "other", label: "Rider detected", vehicle: "Motorcycle" };
+  return { type: "other", label: cls, vehicle: "Vehicle" };
+}
 
-function App() {
-  const [tab, setTab] = useState<"traffic" | "helmet" | "triple" | "seatbelt" | "license" | "pipeline">("traffic");
-  const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isAnalyzed, setIsAnalyzed] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
-  const [fileName, setFileName] = useState("No video selected");
+async function callRoboflow(modelId: string, base64: string): Promise<InferenceResult> {
+  const res = await fetch(`https://serverless.roboflow.com/${modelId}?api_key=${RF_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: base64,
+  });
+  if (!res.ok) throw new Error(`Roboflow ${modelId} failed`);
+  return res.json();
+}
 
-  const activeViolations = analysis?.violations ?? fallbackViolations;
-  const activeDetections =
-    analysis?.detections.map((item) => ({
-      ...item,
-      icon:
-        item.label.toLowerCase().includes("bike") ||
-        item.label.toLowerCase().includes("motorbike")
-          ? Bike
-          : item.label.toLowerCase().includes("people")
-            ? UserRound
-            : Car,
-    })) ?? detections;
+// ── Main App ───────────────────────────────────────────────────────
+export default function App() {
+  // Upload state
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
 
-  const activeChartData = useMemo(() => {
-    const counts = activeViolations.reduce<Record<string, number>>(
-      (total, item) => {
-        const label = item.type.split(" ")[0];
-        total[label] = (total[label] ?? 0) + 1;
-        return total;
-      },
-      {}
+  // Pipeline state
+  const [stages, setStages] = useState<PipelineStage[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [pipelineComplete, setPipelineComplete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Results
+  const [preprocessResult, setPreprocessResult] = useState<PreprocessResult | null>(null);
+  const [allPredictions, setAllPredictions] = useState<Prediction[]>([]);
+  const [imageSize, setImageSize] = useState({ width: 640, height: 640 });
+  const [currentRecords, setCurrentRecords] = useState<ViolationRecord[]>([]);
+  const [processingStages, setProcessingStages] = useState<{ stage: string; ms: number }[]>([]);
+  const [imageId, setImageId] = useState("");
+  const [annotatedSrc, setAnnotatedSrc] = useState<string | null>(null);
+  const [plateResults, setPlateResults] = useState<InferenceResult | null>(null);
+
+  // Global records
+  const [allRecords, setAllRecords] = useState<ViolationRecord[]>(loadRecords());
+  const analytics = useMemo(() => computeAnalytics(allRecords), [allRecords]);
+  const evalMetrics = useMemo(() => loadEvaluationMetrics(), [allRecords]);
+
+  // Active section for scroll navigation
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+
+  const handleFileSelected = useCallback((f: File, prev: string) => {
+    setFile(f);
+    setPreview(prev);
+    setPipelineComplete(false);
+    setAllPredictions([]);
+    setCurrentRecords([]);
+    setPreprocessResult(null);
+    setAnnotatedSrc(null);
+    setPlateResults(null);
+    setStages([]);
+    setError(null);
+    setProcessingStages([]);
+  }, []);
+
+  function updateStage(id: string, updates: Partial<PipelineStage>) {
+    setStages(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+  }
+
+  // ── Run the full pipeline ────────────────────────────────────────
+  async function runPipeline() {
+    if (!file || !preview) return;
+    setIsRunning(true);
+    setError(null);
+    setPipelineComplete(false);
+    setAllPredictions([]);
+    setCurrentRecords([]);
+    setAnnotatedSrc(null);
+    setPlateResults(null);
+
+    const imgId = uid();
+    setImageId(imgId);
+
+    const base64 = preview.split(",")[1];
+    const timings: { stage: string; ms: number }[] = [];
+
+    const initialStages: PipelineStage[] = [
+      { id: "upload", label: "Image Upload", status: "completed" },
+      { id: "preprocess", label: "Preprocessing", status: "pending" },
+      { id: "helmet", label: "Helmet Detection", status: "pending" },
+      { id: "triple", label: "Triple Rider & Phone Detection", status: "pending" },
+      { id: "seatbelt", label: "Seatbelt & Mobile Detection", status: "pending" },
+      { id: "license", label: "License Plate OCR", status: "pending" },
+      { id: "evidence", label: "Evidence Generation", status: "pending" },
+      { id: "save", label: "Record Saving", status: "pending" },
+    ];
+    setStages(initialStages);
+
+    let mergedPredictions: Prediction[] = [];
+    let finalImageSrc = preview;
+    let imgW = 640, imgH = 640;
+    let preprocessData: PreprocessResult | null = null;
+
+    // Stage 1: Preprocessing
+    try {
+      updateStage("preprocess", { status: "processing" });
+      const t0 = performance.now();
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/preprocess", { method: "POST", body: formData });
+      const dt = Math.round(performance.now() - t0);
+      timings.push({ stage: "Preprocessing", ms: dt });
+      if (res.ok) {
+        preprocessData = await res.json();
+        setPreprocessResult(preprocessData);
+        finalImageSrc = preprocessData!.denoised;
+        updateStage("preprocess", { status: "completed", durationMs: dt });
+      } else {
+        updateStage("preprocess", { status: "failed", durationMs: dt, error: "Backend unavailable" });
+      }
+    } catch {
+      updateStage("preprocess", { status: "failed", error: "Backend unavailable" });
+    }
+
+    // Stage 2-4: Detection models (run in parallel)
+    const detectionModels = [
+      { id: "helmet", model: MODELS.helmet },
+      { id: "triple", model: MODELS.triple },
+      { id: "seatbelt", model: MODELS.seatbelt },
+    ];
+
+    for (const dm of detectionModels) {
+      updateStage(dm.id, { status: "processing" });
+    }
+
+    const detectionResults = await Promise.allSettled(
+      detectionModels.map(async (dm) => {
+        const t0 = performance.now();
+        try {
+          const result = await callRoboflow(dm.model, base64);
+          const dt = Math.round(performance.now() - t0);
+          timings.push({ stage: dm.id.charAt(0).toUpperCase() + dm.id.slice(1) + " Detection", ms: dt });
+          updateStage(dm.id, { status: "completed", durationMs: dt });
+          if (result.image) {
+            imgW = result.image.width;
+            imgH = result.image.height;
+          }
+          return result;
+        } catch (err) {
+          const dt = Math.round(performance.now() - t0);
+          timings.push({ stage: dm.id.charAt(0).toUpperCase() + dm.id.slice(1) + " Detection", ms: dt });
+          updateStage(dm.id, { status: "failed", durationMs: dt, error: String(err) });
+          return null;
+        }
+      })
     );
 
-    return Object.entries(counts).map(([type, count]) => ({ type, count }));
-  }, [activeViolations]);
-
-  const activeStatusData = useMemo(
-    () => [
-      {
-        name: "Violations",
-        value: analysis?.summary.violations_found ?? activeViolations.length,
-        color: "#dc2626",
-      },
-      {
-        name: "Frames",
-        value: analysis?.frames.count ?? 1,
-        color: "#16a34a",
-      },
-    ],
-    [activeViolations.length, analysis]
-  );
-
-  const averageConfidence = useMemo(
-    () =>
-      Math.round(
-        activeViolations.reduce((total, item) => total + item.confidence, 0) /
-          activeViolations.length
-      ),
-    [activeViolations]
-  );
-
-  function handleFile(file?: File) {
-    if (!file) return;
-    if (!file.type.startsWith("video/")) {
-      setErrorMessage("Select a video file.");
-      return;
-    }
-    setFileName(file.name);
-    if (selectedVideo) URL.revokeObjectURL(selectedVideo);
-    setSelectedFile(file);
-    setSelectedVideo(URL.createObjectURL(file));
-    setIsAnalyzed(false);
-    setAnalysis(null);
-    setErrorMessage(null);
-  }
-
-  async function analyzeVideo() {
-    if (!selectedFile) {
-      setErrorMessage("Upload a traffic video before analysis.");
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-
-    setIsAnalyzing(true);
-    setErrorMessage(null);
-
-    try {
-      const response = await fetch("/api/violations/analyze-video", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.detail ?? "Video analysis failed.");
+    // Merge predictions and discard low confidence mobile phone detections
+    detectionResults.forEach(r => {
+      if (r.status === "fulfilled" && r.value) {
+        const filtered = r.value.predictions.filter(p => {
+          const isPhone = p.class.toLowerCase().includes("phone") || p.class.toLowerCase().includes("mobile");
+          return !(isPhone && p.confidence < 0.45);
+        });
+        mergedPredictions = [...mergedPredictions, ...filtered];
       }
+    });
 
-      const result = (await response.json()) as AnalysisResult;
-      setAnalysis(result);
-      setIsAnalyzed(true);
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "Video analysis failed."
-      );
-      setIsAnalyzed(false);
-    } finally {
-      setIsAnalyzing(false);
+    // Stage 5: License plate OCR
+    try {
+      updateStage("license", { status: "processing" });
+      const t0 = performance.now();
+      const lpFormData = new FormData();
+      lpFormData.append("file", file);
+      const lpRes = await fetch("/api/license-plate/detect", { method: "POST", body: lpFormData });
+      const dt = Math.round(performance.now() - t0);
+      timings.push({ stage: "License Plate OCR", ms: dt });
+      if (lpRes.ok) {
+        const lpData: InferenceResult = await lpRes.json();
+        setPlateResults(lpData);
+        lpData.predictions.forEach(p => {
+          mergedPredictions.push({ ...p, class: p.class || "license_plate" });
+        });
+        if (lpData.image) { imgW = lpData.image.width; imgH = lpData.image.height; }
+        updateStage("license", { status: "completed", durationMs: dt });
+      } else {
+        updateStage("license", { status: "failed", durationMs: dt });
+      }
+    } catch {
+      updateStage("license", { status: "failed", error: "Backend unavailable" });
     }
+
+    setImageSize({ width: imgW, height: imgH });
+    setAllPredictions(mergedPredictions);
+    setAnnotatedSrc(finalImageSrc);
+
+    // Stage 6: Evidence generation
+    updateStage("evidence", { status: "processing" });
+    const t6 = performance.now();
+    // The AnnotatedPreview component handles canvas drawing of bounding boxes
+    const evidenceDt = Math.round(performance.now() - t6);
+    timings.push({ stage: "Evidence Generation", ms: evidenceDt });
+    updateStage("evidence", { status: "completed", durationMs: evidenceDt });
+
+    // Stage 7: Record saving
+    updateStage("save", { status: "processing" });
+    const t7 = performance.now();
+    const now = new Date().toISOString();
+    const totalPipelineMs = timings.reduce((s, t) => s + t.ms, 0);
+
+    // Find plate numbers from all predictions
+    const plates = mergedPredictions
+      .map(p => p.ocr_text)
+      .filter(Boolean);
+
+    const violationPreds = mergedPredictions.filter(p => {
+      const k = p.class.toLowerCase();
+      return k.includes("no-helmet") || k.includes("no helmet") ||
+        k.includes("triple") || k.includes("more_than_two") ||
+        k.includes("phone") || k.includes("mobile") ||
+        k.includes("seatbelt");
+    });
+
+    // If no violations detected, still save a record noting the analysis
+    const records: ViolationRecord[] = violationPreds.length > 0
+      ? violationPreds.map(p => {
+          const { label, vehicle } = classifyViolation(p.class);
+          return {
+            id: uid(),
+            timestamp: now,
+            violationType: classifyViolation(p.class).type as any,
+            violationLabel: label,
+            confidence: Math.round(p.confidence * 100),
+            vehicleType: vehicle,
+            plateNumber: plates[0] ?? "",
+            imageId: imgId,
+            processingTimeMs: totalPipelineMs,
+            status: "Completed" as const,
+            boundingBox: { x: p.x, y: p.y, width: p.width, height: p.height },
+          };
+        })
+      : [];
+
+    setCurrentRecords(records);
+    if (records.length > 0) {
+      const updated = appendRecords(records);
+      setAllRecords(updated);
+    }
+
+    const saveDt = Math.round(performance.now() - t7);
+    timings.push({ stage: "Record Saving", ms: saveDt });
+    updateStage("save", { status: "completed", durationMs: saveDt });
+
+    setProcessingStages(timings);
+    setPipelineComplete(true);
+    setIsRunning(false);
   }
 
-  const tabs = [
-    { id: "traffic", label: "Traffic Analysis" },
-    { id: "helmet", label: "Helmet Detection" },
-    { id: "triple", label: "Triple Rider & Phone" },
-    { id: "seatbelt", label: "Seatbelt & Mobile" },
-    { id: "license", label: "License Plate OCR" },
-    { id: "pipeline", label: "Pipeline Demo" },
+  function resetPipeline() {
+    setFile(null);
+    setPreview(null);
+    setStages([]);
+    setPipelineComplete(false);
+    setAllPredictions([]);
+    setCurrentRecords([]);
+    setPreprocessResult(null);
+    setAnnotatedSrc(null);
+    setPlateResults(null);
+    setError(null);
+    setProcessingStages([]);
+    setIsRunning(false);
+  }
+
+  function handleClearHistory() {
+    clearRecords();
+    setAllRecords([]);
+  }
+
+  const sections = [
+    { id: "pipeline", label: "Pipeline" },
+    { id: "evidence", label: "Evidence" },
+    { id: "analytics", label: "Analytics" },
+    { id: "records", label: "Records" },
+    { id: "evaluation", label: "Evaluation" },
   ];
 
-  const navigation = (
-    <nav className="border-b border-slate-100 bg-white px-6 flex flex-wrap gap-1 py-2">
-      {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => setTab(t.id as any)}
-          className={cn(
-            "px-4 py-1.5 rounded-md text-sm transition-colors",
-            tab === t.id
-              ? "font-medium bg-slate-900 text-white"
-              : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-          )}
-        >
-          {t.label}
-        </button>
-      ))}
-    </nav>
-  );
-
-  if (tab === "helmet") return <div>{navigation}<HelmetDetection /></div>;
-  if (tab === "triple") return <div>{navigation}<TripleRiderDetection /></div>;
-  if (tab === "seatbelt") return <div>{navigation}<SeatbeltMobileDetection /></div>;
-  if (tab === "license") return <div>{navigation}<LicensePlateDetection /></div>;
-  if (tab === "pipeline") return <div>{navigation}<PipelineDemo /></div>;
+  const [activeTab, setActiveTab] = useState("Unified Pipeline");
+  const tabNames = [
+    "Unified Pipeline",
+    "Pipeline Demo",
+    "Helmet Detection",
+    "Triple Rider",
+    "Seatbelt & Mobile",
+    "License Plate"
+  ];
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      {navigation}
-      <section className="border-b border-border bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-10 px-5 py-8 md:px-8 lg:flex-row lg:items-center lg:py-12">
-          <div className="flex-1 space-y-5">
-            <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
-              <ShieldCheck className="h-4 w-4" />
-              Computer vision proof of concept
-            </div>
-            <div className="space-y-3">
-              <h1 className="max-w-3xl text-4xl font-semibold leading-tight text-slate-950 md:text-5xl">
-                Traffic Violation AI
-              </h1>
-              <p className="max-w-2xl text-base leading-7 text-slate-600 md:text-lg">
-                Upload a traffic video, send it to the backend API, extract
-                frames, and review detected vehicles, violations, plates, and
-                evidence in one compact workflow.
-              </p>
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <Button
-                size="lg"
-                onClick={() =>
-                  document.getElementById("traffic-video-input")?.click()
-                }
-              >
-                <Upload className="h-5 w-5" />
-                Upload video
-              </Button>
-              <Button
-                size="lg"
-                variant="outline"
-                onClick={analyzeVideo}
-                disabled={isAnalyzing || !selectedFile}
-              >
-                <Play className="h-5 w-5" />
-                {isAnalyzing ? "Analyzing..." : "Analyze video"}
-              </Button>
-            </div>
-          </div>
-          <div className="w-full max-w-xl rounded-lg border border-border bg-slate-50 p-3 shadow-soft">
-            <EvidencePreview video={selectedVideo} analyzed={isAnalyzed} />
-          </div>
-        </div>
-      </section>
-
-      <section className="mx-auto grid max-w-7xl gap-6 px-5 py-8 md:px-8 lg:grid-cols-[0.9fr_1.1fr]">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between gap-4">
+    <main className="min-h-screen bg-[#fafbfc] text-slate-900">
+      {/* Header */}
+      <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm border-b border-slate-100">
+        <div className="mx-auto max-w-6xl px-5 py-3 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-1.5 rounded-lg bg-slate-900">
+                <ShieldCheck className="h-4 w-4 text-white" />
+              </div>
               <div>
-                <h2 className="text-xl font-semibold text-slate-950">
-                  Upload & analysis
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Drag a video here or choose one to start.
+                <h1 className="text-base font-bold text-slate-900 tracking-tight leading-none">
+                  Traffic Violation AI
+                </h1>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Computer Vision Pipeline · Proof of Concept
                 </p>
               </div>
-              <Video className="h-5 w-5 text-blue-600" />
             </div>
-          </CardHeader>
-          <CardContent>
-            <label
-              htmlFor="traffic-video-input"
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                handleFile(event.dataTransfer.files[0]);
-              }}
-              className="flex min-h-56 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-blue-200 bg-blue-50/60 px-5 py-8 text-center transition hover:bg-blue-50"
-            >
-              <Upload className="mb-4 h-10 w-10 text-blue-600" />
-              <span className="text-base font-semibold text-slate-900">
-                Drop traffic video here
-              </span>
-              <span className="mt-2 text-sm text-slate-500">
-                MP4, WEBM, MOV, or AVI. Backend extracts frames before analysis.
-              </span>
-              <input
-                id="traffic-video-input"
-                type="file"
-                accept="video/*"
-                className="sr-only"
-                onChange={(event) => handleFile(event.target.files?.[0])}
-              />
-            </label>
-            <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 items-center gap-2 text-sm text-slate-600">
-                <FileVideo className="h-4 w-4 shrink-0 text-slate-400" />
-                <span className="truncate">{fileName}</span>
-              </div>
-              <Button
-                onClick={analyzeVideo}
-                disabled={isAnalyzing || !selectedFile}
+            {activeTab === "Unified Pipeline" && (
+              <nav className="hidden sm:flex items-center gap-1">
+                {sections.map(s => (
+                  <a
+                    key={s.id}
+                    href={`#${s.id}`}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+                  >
+                    {s.label}
+                  </a>
+                ))}
+              </nav>
+            )}
+          </div>
+          
+          {/* Tabs Navigation */}
+          <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-hide">
+            <Layers className="h-4 w-4 text-slate-400 mr-2 shrink-0" />
+            {tabNames.map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`
+                  whitespace-nowrap px-3 py-1.5 rounded-md text-xs font-medium transition-colors
+                  ${activeTab === tab 
+                    ? "bg-slate-900 text-white" 
+                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                  }
+                `}
               >
-                <Play className="h-4 w-4" />
-                {isAnalyzing ? "Analyzing..." : "Analyze video"}
-              </Button>
-            </div>
-            {errorMessage && (
-              <p className="mt-3 text-sm font-medium text-red-600">
-                {errorMessage}
-              </p>
-            )}
-            {analysis && (
-              <p className="mt-3 text-sm text-slate-500">
-                Extracted {analysis.frames.count} frames to{" "}
-                {analysis.frames.folder_path}.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <SummaryCard
-            title="Vehicles detected"
-            value={
-              isAnalyzed ? String(analysis?.summary.vehicles_detected ?? 0) : "0"
-            }
-            icon={Car}
-            helper="Cars and motorbikes"
-            tone="blue"
-          />
-          <SummaryCard
-            title="Violations found"
-            value={
-              isAnalyzed ? String(analysis?.summary.violations_found ?? 0) : "0"
-            }
-            icon={AlertTriangle}
-            helper={isAnalyzed ? "Needs review" : "Run analysis"}
-            tone="red"
-          />
-          <SummaryCard
-            title="Plate detected"
-            value={
-              isAnalyzed ? String(analysis?.summary.plates_detected ?? 0) : "0"
-            }
-            icon={Camera}
-            helper={isAnalyzed ? "OCR matched" : "Awaiting frame"}
-            tone="green"
-          />
-          <SummaryCard
-            title="Frames"
-            value={isAnalyzed ? String(analysis?.frames.count ?? 0) : "0"}
-            icon={Gauge}
-            helper={
-              isAnalyzed ? `${averageConfidence}% avg confidence` : "Extracted"
-            }
-            tone="blue"
-          />
+                {tab}
+              </button>
+            ))}
+          </div>
         </div>
-      </section>
+      </header>
 
-      <section className="mx-auto grid max-w-7xl gap-6 px-5 pb-10 md:px-8 lg:grid-cols-[1.15fr_0.85fr]">
-        <Card>
-          <CardHeader>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-950">
-                  Results
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Video evidence, detections, and supported violation checks.
-                </p>
-              </div>
-              <span
-                className={cn(
-                  "inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-sm font-medium",
-                  isAnalyzed
-                    ? "bg-red-50 text-red-700"
-                    : "bg-emerald-50 text-emerald-700"
-                )}
-              >
-                {isAnalyzed ? (
-                  <AlertTriangle className="h-4 w-4" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4" />
-                )}
-                {isAnalyzed ? "Violations detected" : "Ready to analyze"}
-              </span>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
-              <EvidencePreview video={selectedVideo} analyzed={isAnalyzed} />
-              <div className="space-y-5">
-                <div>
-                  <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                    Detected objects
-                  </h3>
-                  <div className="mt-3 grid gap-3">
-                    {activeDetections.map((item) => (
-                      <div
-                        key={item.label}
-                        className="flex items-center justify-between rounded-md border border-border bg-slate-50 px-3 py-3"
-                      >
-                        <div className="flex items-center gap-3">
-                          <item.icon className="h-5 w-5 text-blue-600" />
-                          <span className="font-medium text-slate-800">
-                            {item.label}
-                          </span>
+      <div className="mx-auto max-w-6xl px-5 py-8 space-y-12">
+        {activeTab === "Unified Pipeline" ? (
+          <>
+
+        {/* ── Section 1: Pipeline ──────────────────────────────────── */}
+        <section id="pipeline">
+          <SectionHeader
+            icon={Upload}
+            title="Upload & Analyze"
+            subtitle="Upload a traffic image to run the full violation detection pipeline."
+          />
+
+          {!file ? (
+            <UploadPanel
+              onFileSelected={handleFileSelected}
+              disabled={isRunning}
+              isProcessing={isRunning}
+            />
+          ) : (
+            <div className="space-y-6">
+              {/* Image preview + pipeline tracker */}
+              <div className="grid lg:grid-cols-[1.2fr_0.8fr] gap-6">
+                <div className="space-y-4">
+                  {/* Preview */}
+                  <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
+                    <img
+                      src={preview!}
+                      alt="Uploaded traffic image"
+                      className="w-full object-contain max-h-[400px]"
+                    />
+                    {!isRunning && !pipelineComplete && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
+                        <button
+                          onClick={runPipeline}
+                          className="inline-flex items-center gap-2 bg-white text-slate-900 px-6 py-3 rounded-xl font-semibold text-sm shadow-lg hover:scale-105 transition-transform"
+                        >
+                          <Upload className="h-4 w-4" />
+                          Upload & Analyze Image
+                        </button>
+                      </div>
+                    )}
+                    {isRunning && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+                        <div className="flex items-center gap-3 bg-white/90 px-5 py-3 rounded-xl shadow-lg">
+                          <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />
+                          <span className="text-sm font-medium text-slate-800">Processing…</span>
                         </div>
-                        <span className="text-lg font-semibold text-slate-950">
-                          {isAnalyzed ? item.count : 0}
-                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* File info bar */}
+                  <div className="flex items-center justify-between text-sm bg-white rounded-lg border border-slate-100 px-4 py-2.5">
+                    <span className="truncate text-slate-600 font-medium">{file.name}</span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-slate-400">{(file.size / 1024).toFixed(0)} KB</span>
+                      <button onClick={resetPipeline} className="text-slate-400 hover:text-red-500 transition-colors">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pipeline tracker */}
+                <div className="bg-white rounded-xl border border-slate-100 p-5">
+                  {stages.length > 0 ? (
+                    <PipelineTracker stages={stages} />
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center py-12">
+                      <Camera className="h-8 w-8 text-slate-300 mb-3" />
+                      <p className="text-sm text-slate-500">Click "Upload & Analyze Image" to start the pipeline</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Preprocessing results */}
+              {preprocessResult && (
+                <div className="bg-white rounded-xl border border-slate-100 p-5">
+                  <h4 className="text-sm font-semibold text-slate-700 mb-4">Preprocessing Stages</h4>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    {[
+                      { label: "Original", src: preprocessResult.original },
+                      { label: "Normalized", src: preprocessResult.normalized },
+                      { label: "Enhanced", src: preprocessResult.enhanced },
+                      { label: "Denoised", src: preprocessResult.denoised },
+                    ].map(step => (
+                      <div key={step.label} className="space-y-2">
+                        <img src={step.src} alt={step.label} className="w-full rounded-lg border border-slate-200 object-contain h-36" />
+                        <p className="text-xs font-medium text-slate-600 text-center">{step.label}</p>
                       </div>
                     ))}
                   </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                    Supported checks
-                  </h3>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {violationTypes.map((type) => (
-                      <span
-                        key={type}
-                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-700"
-                      >
-                        {type}
-                      </span>
-                    ))}
+                  <div className="grid grid-cols-3 gap-3 mt-4">
+                    <MetricBar label="Brightness" value={preprocessResult.metrics.brightness} color="bg-amber-400" />
+                    <MetricBar label="Sharpness" value={preprocessResult.metrics.sharpness} color="bg-emerald-400" />
+                    <MetricBar label="Contrast" value={preprocessResult.metrics.contrast} color="bg-indigo-500" />
                   </div>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <h2 className="text-xl font-semibold text-slate-950">
-              Evidence panel
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Violation records returned by the backend analysis API.
-            </p>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {(isAnalyzed ? activeViolations : []).map((item) => (
-                <div
-                  key={`${item.type}-${item.timestamp}`}
-                  className="rounded-md border border-border p-3"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-semibold text-slate-950">
-                        {item.type}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        {item.timestamp} - Plate {item.plate}
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-red-50 px-2.5 py-1 text-sm font-medium text-red-700">
-                      {item.confidence}%
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {!isAnalyzed && (
-                <div className="rounded-md border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500">
-                  Run analysis to populate violation evidence.
                 </div>
               )}
             </div>
-          </CardContent>
-        </Card>
-      </section>
+          )}
+        </section>
 
-      <section className="mx-auto grid max-w-7xl gap-6 px-5 pb-12 md:px-8 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5 text-blue-600" />
-              <h2 className="text-xl font-semibold text-slate-950">
-                Violation mix
-              </h2>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={isAnalyzed ? activeChartData : []}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="type" tickLine={false} axisLine={false} />
-                  <YAxis
-                    allowDecimals={false}
-                    tickLine={false}
-                    axisLine={false}
+        {/* ── Section 2: Evidence ──────────────────────────────────── */}
+        {pipelineComplete && (
+          <section id="evidence">
+            <SectionHeader
+              icon={Eye}
+              title="Evidence Generation"
+              subtitle="Annotated output with bounding boxes, labels, confidence scores, and violation tags."
+            />
+            <div className="grid lg:grid-cols-[1.3fr_0.7fr] gap-6">
+              <div className="space-y-4">
+                {annotatedSrc && (
+                  <AnnotatedPreview
+                    imageSrc={annotatedSrc}
+                    predictions={allPredictions}
+                    imageSize={imageSize}
                   />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#2563eb" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <h2 className="text-xl font-semibold text-slate-950">
-              Frame status
-            </h2>
-          </CardHeader>
-          <CardContent>
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={
-                      isAnalyzed
-                        ? activeStatusData
-                        : [{ name: "Pending", value: 1, color: "#94a3b8" }]
-                    }
-                    innerRadius={58}
-                    outerRadius={86}
-                    paddingAngle={3}
-                    dataKey="value"
-                  >
-                    {(isAnalyzed
-                      ? activeStatusData
-                      : [{ name: "Pending", value: 1, color: "#94a3b8" }]
-                    ).map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                )}
+                {/* Detection summary chips */}
+                {currentRecords.length === 0 ? (
+                  <div className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                    No violations detected
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {allPredictions.map((p, i) => (
+                      <span key={i} className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${isViolation(p.class) ? "bg-red-50 text-red-700 border-red-200" : "bg-slate-50 text-slate-700 border-slate-200"}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${isViolation(p.class) ? "bg-red-500" : "bg-slate-400"}`} />
+                        {p.ocr_text || p.class} — {Math.round(p.confidence * 100)}%
+                      </span>
                     ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+              <MetadataPanel
+                records={currentRecords}
+                processingStages={processingStages}
+                imageId={imageId}
+                isComplete={pipelineComplete}
+              />
             </div>
-          </CardContent>
-        </Card>
-      </section>
+
+            {/* Reset button */}
+            <div className="mt-6 flex justify-center">
+              <button onClick={resetPipeline} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+                <RotateCcw className="h-4 w-4" /> Analyze Another Image
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ── Section 3: Analytics ─────────────────────────────────── */}
+        <section id="analytics">
+          <SectionHeader
+            icon={BarChart3}
+            title="Analytics & Reporting"
+            subtitle="Charts and summaries derived from stored violation records."
+          />
+          <AnalyticsCharts analytics={analytics} />
+        </section>
+
+        {/* ── Section 4: Records ───────────────────────────────────── */}
+        <section id="records">
+          <div className="flex items-center justify-between mb-4">
+            <SectionHeader
+              icon={FileSearch}
+              title="Violation History"
+              subtitle="Searchable records with filters and CSV export."
+              inline
+            />
+            {allRecords.length > 0 && (
+              <button onClick={handleClearHistory} className="inline-flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 transition-colors">
+                <Trash2 className="h-3.5 w-3.5" /> Clear History
+              </button>
+            )}
+          </div>
+          <RecordsTable records={allRecords} />
+        </section>
+
+        {/* ── Section 5: Evaluation ────────────────────────────────── */}
+        <section id="evaluation">
+          <SectionHeader
+            icon={Gauge}
+            title="Model Performance Evaluation"
+            subtitle="Real evaluation metrics from model validation runs."
+          />
+          <EvaluationCards metrics={evalMetrics} />
+        </section>
+          </>
+        ) : activeTab === "Pipeline Demo" ? (
+          <PipelineDemo />
+        ) : activeTab === "Helmet Detection" ? (
+          <HelmetDetection />
+        ) : activeTab === "Triple Rider" ? (
+          <TripleRiderDetection />
+        ) : activeTab === "Seatbelt & Mobile" ? (
+          <SeatbeltMobileDetection />
+        ) : activeTab === "License Plate" ? (
+          <LicensePlateDetection />
+        ) : null}
+      </div>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-100 bg-white mt-16">
+        <div className="mx-auto max-w-6xl px-5 py-6 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <p className="text-xs text-slate-400">
+            Traffic Violation AI · Computer Vision Proof of Concept
+          </p>
+          <p className="text-xs text-slate-400">
+            YOLOv8 · Roboflow · EasyOCR · OpenCV
+          </p>
+        </div>
+      </footer>
     </main>
   );
 }
 
-function SummaryCard({
-  title,
-  value,
-  helper,
-  icon: Icon,
-  tone,
-}: {
-  title: string;
-  value: string;
-  helper: string;
-  icon: typeof Car;
-  tone: "blue" | "red" | "green";
-}) {
-  const colors = {
-    blue: "bg-blue-50 text-blue-700",
-    red: "bg-red-50 text-red-700",
-    green: "bg-emerald-50 text-emerald-700",
-  };
+// ── Utility components ─────────────────────────────────────────────
 
-  return (
-    <Card>
-      <CardContent className="p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-slate-500">{title}</p>
-            <p className="mt-2 text-3xl font-semibold text-slate-950">
-              {value}
-            </p>
-            <p className="mt-1 text-sm text-slate-500">{helper}</p>
-          </div>
-          <div className={cn("rounded-md p-2.5", colors[tone])}>
-            <Icon className="h-5 w-5" />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function EvidencePreview({
-  video,
-  analyzed,
-}: {
-  video: string | null;
-  analyzed: boolean;
+function SectionHeader({ icon: Icon, title, subtitle, inline }: {
+  icon: typeof Upload; title: string; subtitle: string; inline?: boolean;
 }) {
   return (
-    <div className="relative aspect-[16/10] overflow-hidden rounded-md bg-slate-200">
-      {video ? (
-        <video
-          src={video}
-          controls
-          muted
-          playsInline
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#dbeafe,#f8fafc_45%,#e2e8f0)]">
-          <div className="grid w-4/5 gap-3">
-            <div className="h-20 rounded-md bg-slate-300/80" />
-            <div className="grid grid-cols-3 gap-3">
-              <div className="h-16 rounded-md bg-blue-200/80" />
-              <div className="h-16 rounded-md bg-slate-300/80" />
-              <div className="h-16 rounded-md bg-red-200/80" />
-            </div>
-          </div>
+    <div className={inline ? "" : "mb-6"}>
+      <div className="flex items-center gap-2.5">
+        <div className="p-1.5 rounded-lg bg-slate-100">
+          <Icon className="h-4 w-4 text-slate-600" />
         </div>
-      )}
-      {analyzed && (
-        <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 62.5">
-          <rect
-            x="12"
-            y="27"
-            width="28"
-            height="18"
-            fill="none"
-            stroke="#dc2626"
-            strokeWidth="1.8"
-            rx="1"
-          />
-          <rect
-            x="54"
-            y="24"
-            width="24"
-            height="17"
-            fill="none"
-            stroke="#2563eb"
-            strokeWidth="1.8"
-            rx="1"
-          />
-          <rect
-            x="20"
-            y="16"
-            width="8"
-            height="12"
-            fill="none"
-            stroke="#dc2626"
-            strokeWidth="1.6"
-            rx="1"
-          />
-          <rect
-            x="63"
-            y="42"
-            width="14"
-            height="4"
-            fill="rgba(255,255,255,0.85)"
-            stroke="#16a34a"
-            strokeWidth="1"
-            rx="1"
-          />
-          <line
-            x1="6"
-            y1="49"
-            x2="94"
-            y2="49"
-            stroke="#ef4444"
-            strokeWidth="1.5"
-            strokeDasharray="3 2"
-          />
-          <text x="13" y="25" fill="#dc2626" fontSize="4" fontWeight="700">
-            Helmet violation
-          </text>
-          <text x="64" y="45" fill="#166534" fontSize="3" fontWeight="700">
-            KA05MX4412
-          </text>
-        </svg>
-      )}
+        <h2 className="text-lg font-bold text-slate-900">{title}</h2>
+      </div>
+      <p className="text-sm text-slate-500 mt-1 ml-9">{subtitle}</p>
     </div>
   );
 }
 
-export default App;
+function MetricBar({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-xs">
+        <span className="text-slate-600 font-medium">{label}</span>
+        <span className="text-slate-900 font-semibold tabular-nums">{value}%</span>
+      </div>
+      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-700 ${color}`} style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function isViolation(cls: string): boolean {
+  const k = cls.toLowerCase();
+  return k.includes("no-helmet") || k.includes("no helmet") ||
+    k.includes("triple") || k.includes("more_than_two") ||
+    k.includes("phone") || k.includes("mobile") || k.includes("seatbelt");
+}

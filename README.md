@@ -32,6 +32,34 @@ This tool is incredibly useful for civic tech projects, smart city hackathons, o
 
 ---
 
+## 📸 Demo & Features Deep-Dive
+
+### 🏍️ Helmet Detection
+**How it works:** The system analyzes motorcycle riders to verify if they are wearing helmets. It identifies motorcycles, isolates the rider's region, and runs it through a specialized computer vision model trained to distinguish between heads with helmets and those without.
+| Input Image | Detection Output |
+| :---: | :---: |
+| *[Add input image here]* | *[Add output image here]* |
+
+### 👨‍👩‍👦 Triple Rider Detection
+**How it works:** To enforce capacity limits on motorcycles, this feature counts the number of riders on a single two-wheeler. The object detection model identifies the bounding box of the motorcycle and maps the number of detected persons overlapping with that vehicle. If the count exceeds two, it flags a violation.
+| Input Image | Detection Output |
+| :---: | :---: |
+| *[Add input image here]* | *[Add output image here]* |
+
+### 🚗 Seatbelt & Mobile Phone Detection
+**How it works:** This pipeline is focused on the driver's seat. It scans the windshield area of detected cars to identify if the driver is securely fastened with a seatbelt and monitors for mobile phone usage while at the wheel. The system isolates the driver's upper body region and classifies the presence of a seatbelt or a phone.
+| Input Image | Detection Output |
+| :---: | :---: |
+| *[Add input image here]* | *[Add output image here]* |
+
+### 📸 License Plate OCR
+**How it works:** Once a traffic violation is confirmed, the system locates the vehicle's license plate. It extracts the cropped plate image, applies advanced image preprocessing (like grayscale conversion, adaptive thresholding, and morphological operations), and passes it to an Optical Character Recognition (OCR) engine to accurately read the alphanumeric text.
+| Input Image | Detection Output |
+| :---: | :---: |
+| *[Add input image here]* | *[Add output image here]* |
+
+---
+
 ## 🚀 How to get started
 
 ### Prerequisites
@@ -95,7 +123,7 @@ npm run dev -- --port 5173
 
 This project is actively maintained. We welcome contributions from the open-source community—whether it's improving OCR accuracy, adding new YOLO classes, or refining the React dashboard!
 
-- **Maintainer:** [Abhay_Kale](https://github.com/AbhayKale332)&[akashch1512](https://github.com/akashch1512)
+- **Maintainer:** [Abhay Kale](https://github.com/AbhayKale332) & [Akash Chaudhari](https://github.com/akashch1512)
 - **Contributing:** We love pull requests! Please refer to `docs/CONTRIBUTING.md` (if available) or simply open an issue to discuss proposed changes before submitting a PR.
   1. Fork the Project
   2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
