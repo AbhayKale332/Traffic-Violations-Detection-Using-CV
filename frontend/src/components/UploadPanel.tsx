@@ -1,12 +1,8 @@
 import { useRef, useState, useCallback } from "react";
-import {
-  Upload,
-  ImageIcon,
-  Loader2,
-} from "lucide-react";
+import { Upload, Loader2, ImageIcon, Film } from "lucide-react";
 
 type UploadPanelProps = {
-  onFileSelected: (file: File, preview: string) => void;
+  onFileSelected: (file: File, preview: string, isVideo: boolean) => void;
   disabled?: boolean;
   isProcessing?: boolean;
 };
@@ -22,10 +18,15 @@ export default function UploadPanel({
   const handleFile = useCallback(
     (file: File | undefined) => {
       if (!file || disabled) return;
-      if (!file.type.startsWith("image/")) return;
+
+      const isVideo = file.type.startsWith("video/");
+      const isImage = file.type.startsWith("image/");
+
+      if (!isImage && !isVideo) return;
+
       const reader = new FileReader();
       reader.onload = (e) => {
-        onFileSelected(file, e.target?.result as string);
+        onFileSelected(file, e.target?.result as string, isVideo);
       };
       reader.readAsDataURL(file);
     },
@@ -69,19 +70,30 @@ export default function UploadPanel({
           </>
         ) : (
           <>
-            <div className="p-4 rounded-2xl bg-white shadow-sm border border-slate-100">
-              <Upload className="h-8 w-8 text-slate-500" />
+            <div className="flex items-center gap-3">
+              <div className="p-3.5 rounded-2xl bg-white shadow-sm border border-slate-100">
+                <ImageIcon className="h-7 w-7 text-slate-500" />
+              </div>
+              <span className="text-slate-300 text-2xl font-thin">|</span>
+              <div className="p-3.5 rounded-2xl bg-white shadow-sm border border-slate-100">
+                <Film className="h-7 w-7 text-indigo-500" />
+              </div>
             </div>
             <div>
               <p className="text-base font-semibold text-slate-800">
-                Upload & Analyze Image
+                Upload Image or Video
               </p>
               <p className="text-sm text-slate-500 mt-1">
-                Drop a traffic image here, or click to browse
+                Drop a traffic image or video here, or click to browse
               </p>
-              <p className="text-xs text-slate-400 mt-1.5">
-                Supports JPG, PNG, WEBP
-              </p>
+              <div className="flex items-center justify-center gap-3 mt-2.5">
+                <span className="inline-flex items-center gap-1.5 text-xs text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full">
+                  <ImageIcon className="h-3 w-3" /> JPG · PNG · WEBP
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-xs text-indigo-500 bg-indigo-50 px-2.5 py-1 rounded-full">
+                  <Film className="h-3 w-3" /> MP4 · MOV · AVI · WEBM
+                </span>
+              </div>
             </div>
           </>
         )}
@@ -89,7 +101,7 @@ export default function UploadPanel({
           id="pipeline-upload"
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/*,video/*"
           className="sr-only"
           disabled={disabled}
           onChange={(e) => handleFile(e.target.files?.[0])}

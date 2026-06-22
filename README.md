@@ -67,6 +67,7 @@ This tool is incredibly useful for civic tech projects, smart city hackathons, o
 Ensure you have the following installed on your system:
 - **Python 3.10+**
 - **Node.js 18+** & **npm**
+- **FFmpeg** (Required for video frame extraction: `sudo apt install ffmpeg` on Ubuntu/Debian, `brew install ffmpeg` on macOS)
 
 ### 1. Clone the repository
 

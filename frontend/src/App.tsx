@@ -1,9 +1,10 @@
 import { useState, useMemo, useCallback } from "react";
 import {
   ShieldCheck, Upload, Loader2, X, RotateCcw, Trash2,
-  Camera, Eye, BarChart3, FileSearch, Gauge, ChevronDown,
-  Layers
+  Camera, Eye, BarChart3, FileSearch, Gauge,
+  Layers, Film
 } from "lucide-react";
+import VideoFramePlayer, { type VideoFrame } from "./components/VideoFramePlayer";
 import UploadPanel from "./components/UploadPanel";
 import PipelineTracker from "./components/PipelineTracker";
 import AnnotatedPreview from "./components/AnnotatedPreview";
@@ -70,6 +71,13 @@ export default function App() {
   // Upload state
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [isVideo, setIsVideo] = useState(false);
+
+  // Video pipeline state
+  const [videoFrames, setVideoFrames] = useState<VideoFrame[]>([]);
+  const [videoTotalFrames, setVideoTotalFrames] = useState(0);
+  const [videoComplete, setVideoComplete] = useState(false);
+  const [videoProgress, setVideoProgress] = useState<string>("");
 
   // Pipeline state
   const [stages, setStages] = useState<PipelineStage[]>([]);
@@ -95,9 +103,10 @@ export default function App() {
   // Active section for scroll navigation
   const [activeSection, setActiveSection] = useState<string | null>(null);
 
-  const handleFileSelected = useCallback((f: File, prev: string) => {
+  const handleFileSelected = useCallback((f: File, prev: string, vid: boolean) => {
     setFile(f);
     setPreview(prev);
+    setIsVideo(vid);
     setPipelineComplete(false);
     setAllPredictions([]);
     setCurrentRecords([]);
@@ -107,6 +116,10 @@ export default function App() {
     setStages([]);
     setError(null);
     setProcessingStages([]);
+    setVideoFrames([]);
+    setVideoTotalFrames(0);
+    setVideoComplete(false);
+    setVideoProgress("");
   }, []);
 
   function updateStage(id: string, updates: Partial<PipelineStage>) {
@@ -302,9 +315,133 @@ export default function App() {
     setIsRunning(false);
   }
 
+  async function runVideoPipeline() {
+    if (!file) return;
+    setIsRunning(true);
+    setError(null);
+    setVideoComplete(false);
+    setVideoFrames([]);
+    setVideoProgress("Extracting frames from video…");
+
+    const initialStages: PipelineStage[] = [
+      { id: "upload", label: "Video Upload", status: "completed" },
+      { id: "extract", label: "Frame Extraction (1fps)", status: "processing" },
+      { id: "detect", label: "Violation Detection", status: "pending" },
+      { id: "save", label: "Record Saving", status: "pending" },
+    ];
+    setStages(initialStages);
+
+    let framesB64: string[] = [];
+    let totalExtracted = 0;
+    let cameraId = "";
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/video-pipeline/extract-frames", { method: "POST", body: formData });
+      if (!res.ok) throw new Error("Frame extraction failed");
+      const data = await res.json();
+      framesB64 = data.frames as string[];
+      totalExtracted = data.total_frames_extracted as number;
+      cameraId = data.camera_id as string;
+      setVideoTotalFrames(totalExtracted);
+      updateStage("extract", { status: "completed" });
+    } catch (e) {
+      updateStage("extract", { status: "failed", error: String(e) });
+      setError("Frame extraction failed. Is the backend running?");
+      setIsRunning(false);
+      return;
+    }
+
+    updateStage("detect", { status: "processing" });
+    setVideoProgress(`Running violation detection on ${framesB64.length} frames…`);
+
+    const imgId = uid();
+    setImageId(imgId);
+    const allSavedRecords: ViolationRecord[] = [];
+    const builtFrames: VideoFrame[] = [];
+
+    for (let i = 0; i < framesB64.length; i++) {
+      const src = framesB64[i];
+      const base64 = src.split(",")[1];
+      setVideoProgress(`Analyzing frame ${i + 1} / ${framesB64.length}…`);
+
+      let framePredictions: Prediction[] = [];
+      try {
+        const results = await Promise.allSettled([
+          callRoboflow(MODELS.helmet, base64),
+          callRoboflow(MODELS.triple, base64),
+          callRoboflow(MODELS.seatbelt, base64),
+        ]);
+        results.forEach(r => {
+          if (r.status === "fulfilled" && r.value) {
+            const filtered = r.value.predictions.filter((p: Prediction) => {
+              const isPhone = p.class.toLowerCase().includes("phone") || p.class.toLowerCase().includes("mobile");
+              return !(isPhone && p.confidence < 0.45);
+            });
+            framePredictions = [...framePredictions, ...filtered];
+          }
+        });
+      } catch { /* skip frame on error */ }
+
+      const now = new Date().toISOString();
+      const violPreds = framePredictions.filter(p => {
+        const k = p.class.toLowerCase();
+        return k.includes("no-helmet") || k.includes("no helmet") ||
+          k.includes("triple") || k.includes("more_than_two") ||
+          k.includes("phone") || k.includes("mobile") ||
+          k.includes("seatbelt");
+      });
+
+      const frameRecords: ViolationRecord[] = violPreds.map(p => {
+        const { label, vehicle } = classifyViolation(p.class);
+        return {
+          id: uid(),
+          timestamp: now,
+          violationType: classifyViolation(p.class).type as any,
+          violationLabel: label,
+          confidence: Math.round(p.confidence * 100),
+          vehicleType: vehicle,
+          plateNumber: "",
+          imageId: imgId,
+          processingTimeMs: 0,
+          status: "Completed" as const,
+          boundingBox: { x: p.x, y: p.y, width: p.width, height: p.height },
+        };
+      });
+
+      allSavedRecords.push(...frameRecords);
+      builtFrames.push({
+        src,
+        index: i,
+        predictions: framePredictions,
+        records: frameRecords,
+        hasViolation: violPreds.length > 0,
+      });
+
+      // Update frames progressively so user sees results as they come
+      setVideoFrames([...builtFrames]);
+    }
+
+    updateStage("detect", { status: "completed" });
+    updateStage("save", { status: "processing" });
+
+    if (allSavedRecords.length > 0) {
+      const updated = appendRecords(allSavedRecords);
+      setAllRecords(updated);
+    }
+    setCurrentRecords(allSavedRecords);
+    updateStage("save", { status: "completed" });
+
+    setVideoComplete(true);
+    setVideoProgress("");
+    setIsRunning(false);
+  }
+
   function resetPipeline() {
     setFile(null);
     setPreview(null);
+    setIsVideo(false);
     setStages([]);
     setPipelineComplete(false);
     setAllPredictions([]);
@@ -315,6 +452,10 @@ export default function App() {
     setError(null);
     setProcessingStages([]);
     setIsRunning(false);
+    setVideoFrames([]);
+    setVideoTotalFrames(0);
+    setVideoComplete(false);
+    setVideoProgress("");
   }
 
   function handleClearHistory() {
@@ -405,7 +546,7 @@ export default function App() {
           <SectionHeader
             icon={Upload}
             title="Upload & Analyze"
-            subtitle="Upload a traffic image to run the full violation detection pipeline."
+            subtitle="Upload a traffic image or video to run the full violation detection pipeline."
           />
 
           {!file ? (
@@ -414,12 +555,72 @@ export default function App() {
               disabled={isRunning}
               isProcessing={isRunning}
             />
-          ) : (
+          ) : isVideo ? (
+            /* ── VIDEO MODE ─────────────────────────────── */
             <div className="space-y-6">
-              {/* Image preview + pipeline tracker */}
               <div className="grid lg:grid-cols-[1.2fr_0.8fr] gap-6">
                 <div className="space-y-4">
-                  {/* Preview */}
+                  {/* Video preview */}
+                  <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
+                    <video
+                      src={preview!}
+                      className="w-full object-contain max-h-[400px]"
+                      controls={false}
+                      muted
+                    />
+                    {!isRunning && !videoComplete && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+                        <button
+                          onClick={runVideoPipeline}
+                          className="inline-flex items-center gap-2 bg-white text-slate-900 px-6 py-3 rounded-xl font-semibold text-sm shadow-lg hover:scale-105 transition-transform"
+                        >
+                          <Film className="h-4 w-4" />
+                          Analyze Video
+                        </button>
+                      </div>
+                    )}
+                    {isRunning && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 backdrop-blur-[2px]">
+                        <Loader2 className="h-8 w-8 text-indigo-400 animate-spin" />
+                        <span className="text-sm font-medium text-white text-center px-4">{videoProgress || "Processing…"}</span>
+                        {videoFrames.length > 0 && (
+                          <span className="text-xs text-indigo-300">{videoFrames.length} frames analyzed so far…</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {/* File info */}
+                  <div className="flex items-center justify-between text-sm bg-white rounded-lg border border-slate-100 px-4 py-2.5">
+                    <div className="flex items-center gap-2 truncate">
+                      <Film className="h-4 w-4 text-indigo-500 shrink-0" />
+                      <span className="truncate text-slate-600 font-medium">{file.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-slate-400">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+                      <button onClick={resetPipeline} className="text-slate-400 hover:text-red-500 transition-colors">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {/* Pipeline tracker */}
+                <div className="bg-white rounded-xl border border-slate-100 p-5">
+                  {stages.length > 0 ? (
+                    <PipelineTracker stages={stages} />
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center py-12">
+                      <Film className="h-8 w-8 text-slate-300 mb-3" />
+                      <p className="text-sm text-slate-500">Click "Analyze Video" to start the pipeline</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* ── IMAGE MODE (unchanged) ─────────────────── */
+            <div className="space-y-6">
+              <div className="grid lg:grid-cols-[1.2fr_0.8fr] gap-6">
+                <div className="space-y-4">
                   <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
                     <img
                       src={preview!}
@@ -446,8 +647,6 @@ export default function App() {
                       </div>
                     )}
                   </div>
-
-                  {/* File info bar */}
                   <div className="flex items-center justify-between text-sm bg-white rounded-lg border border-slate-100 px-4 py-2.5">
                     <span className="truncate text-slate-600 font-medium">{file.name}</span>
                     <div className="flex items-center gap-2 shrink-0">
@@ -458,8 +657,6 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
-                {/* Pipeline tracker */}
                 <div className="bg-white rounded-xl border border-slate-100 p-5">
                   {stages.length > 0 ? (
                     <PipelineTracker stages={stages} />
@@ -471,8 +668,6 @@ export default function App() {
                   )}
                 </div>
               </div>
-
-              {/* Preprocessing results */}
               {preprocessResult && (
                 <div className="bg-white rounded-xl border border-slate-100 p-5">
                   <h4 className="text-sm font-semibold text-slate-700 mb-4">Preprocessing Stages</h4>
@@ -500,8 +695,30 @@ export default function App() {
           )}
         </section>
 
-        {/* ── Section 2: Evidence ──────────────────────────────────── */}
-        {pipelineComplete && (
+        {/* ── Section 2a: Video Results ─────────────────────────────── */}
+        {isVideo && videoFrames.length > 0 && (
+          <section id="evidence">
+            <SectionHeader
+              icon={Film}
+              title="Video Analysis Results"
+              subtitle="Frame-by-frame playback with violation detection overlay and timeline."
+            />
+            <VideoFramePlayer
+              frames={videoFrames}
+              imageSize={{ width: 640, height: 640 }}
+              totalExtractedFrames={videoTotalFrames}
+              videoFileName={file?.name ?? "video"}
+            />
+            <div className="mt-6 flex justify-center">
+              <button onClick={resetPipeline} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+                <RotateCcw className="h-4 w-4" /> Analyze Another File
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ── Section 2b: Image Evidence ───────────────────────────── */}
+        {!isVideo && pipelineComplete && (
           <section id="evidence">
             <SectionHeader
               icon={Eye}
