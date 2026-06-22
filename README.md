@@ -95,7 +95,7 @@ npm run dev -- --port 5173
 
 This project is actively maintained. We welcome contributions from the open-source community—whether it's improving OCR accuracy, adding new YOLO classes, or refining the React dashboard!
 
-- **Maintainer:** [akashch1512](https://github.com/akashch1512)
+- **Maintainer:** [Abhay_Kale](https://github.com/AbhayKale332)&[akashch1512](https://github.com/akashch1512)
 - **Contributing:** We love pull requests! Please refer to `docs/CONTRIBUTING.md` (if available) or simply open an issue to discuss proposed changes before submitting a PR.
   1. Fork the Project
   2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
