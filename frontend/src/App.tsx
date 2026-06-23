@@ -38,22 +38,35 @@ const MODELS = {
 function uid() { return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; }
 
 function classifyViolation(cls: string): { type: string; label: string; vehicle: string } {
-  const k = cls.toLowerCase();
-  if (k.includes("no-helmet") || k.includes("no helmet"))
-    return { type: "helmet_violation", label: "Helmet violation", vehicle: "Motorcycle" };
+  const k = cls.toLowerCase().replace(/_/g, " ").replace(/-/g, " ");
+  if (k.includes("no helmet") || k.includes("nohelmet") || k.includes("without helmet"))
+    return { type: "helmet_violation", label: "No Helmet", vehicle: "Motorcycle" };
   if (k.includes("helmet"))
     return { type: "other", label: "Helmet (compliant)", vehicle: "Motorcycle" };
-  if (k.includes("triple") || k.includes("more_than_two"))
-    return { type: "triple_riding", label: "Triple riding", vehicle: "Motorcycle" };
-  if (k.includes("phone") || k.includes("mobile"))
-    return { type: "phone_usage", label: "Phone usage", vehicle: "Vehicle" };
+  if (k.includes("triple") || k.includes("more than two") || k.includes("more_than_two"))
+    return { type: "triple_riding", label: "Triple Riding", vehicle: "Motorcycle" };
+  if (k.includes("phone") || k.includes("mobile") || k.includes("using phone"))
+    return { type: "phone_usage", label: "Phone Usage", vehicle: "Vehicle" };
+  if (k.includes("no seatbelt") || k.includes("noseatbelt") || k.includes("without seatbelt"))
+    return { type: "no_seatbelt", label: "No Seatbelt", vehicle: "Car" };
   if (k.includes("seatbelt"))
-    return { type: "no_seatbelt", label: "No seatbelt", vehicle: "Car" };
+    return { type: "other", label: "Seatbelt (compliant)", vehicle: "Car" };
   if (k.includes("windshield"))
     return { type: "other", label: "Windshield detected", vehicle: "Car" };
   if (k.includes("rider"))
     return { type: "other", label: "Rider detected", vehicle: "Motorcycle" };
   return { type: "other", label: cls, vehicle: "Vehicle" };
+}
+
+/** Returns true only for actual violations (not compliant detections) */
+function isActualViolation(cls: string): boolean {
+  const k = cls.toLowerCase().replace(/_/g, " ").replace(/-/g, " ");
+  return (
+    k.includes("no helmet") || k.includes("nohelmet") || k.includes("without helmet") ||
+    k.includes("triple") || k.includes("more than two") || k.includes("more_than_two") ||
+    k.includes("phone") || k.includes("mobile") || k.includes("using phone") ||
+    k.includes("no seatbelt") || k.includes("noseatbelt") || k.includes("without seatbelt")
+  );
 }
 
 async function callRoboflow(modelId: string, base64: string): Promise<InferenceResult> {
@@ -78,6 +91,7 @@ export default function App() {
   const [videoTotalFrames, setVideoTotalFrames] = useState(0);
   const [videoComplete, setVideoComplete] = useState(false);
   const [videoProgress, setVideoProgress] = useState<string>("");
+  const [extractFps, setExtractFps] = useState<number>(1);
 
   // Pipeline state
   const [stages, setStages] = useState<PipelineStage[]>([]);
@@ -120,6 +134,7 @@ export default function App() {
     setVideoTotalFrames(0);
     setVideoComplete(false);
     setVideoProgress("");
+    setExtractFps(1);
   }, []);
 
   function updateStage(id: string, updates: Partial<PipelineStage>) {
@@ -272,13 +287,7 @@ export default function App() {
       .map(p => p.ocr_text)
       .filter(Boolean);
 
-    const violationPreds = mergedPredictions.filter(p => {
-      const k = p.class.toLowerCase();
-      return k.includes("no-helmet") || k.includes("no helmet") ||
-        k.includes("triple") || k.includes("more_than_two") ||
-        k.includes("phone") || k.includes("mobile") ||
-        k.includes("seatbelt");
-    });
+    const violationPreds = mergedPredictions.filter(p => isActualViolation(p.class));
 
     // If no violations detected, still save a record noting the analysis
     const records: ViolationRecord[] = violationPreds.length > 0
@@ -325,8 +334,8 @@ export default function App() {
 
     const initialStages: PipelineStage[] = [
       { id: "upload", label: "Video Upload", status: "completed" },
-      { id: "extract", label: "Frame Extraction (1fps)", status: "processing" },
-      { id: "detect", label: "Violation Detection", status: "pending" },
+      { id: "extract", label: `Frame Extraction (${extractFps}fps)`, status: "processing" },
+      { id: "detect", label: "Violation Detection (per frame)", status: "pending" },
       { id: "save", label: "Record Saving", status: "pending" },
     ];
     setStages(initialStages);
@@ -338,17 +347,21 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("fps", String(extractFps));
       const res = await fetch("/api/video-pipeline/extract-frames", { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Frame extraction failed");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Frame extraction failed");
+      }
       const data = await res.json();
       framesB64 = data.frames as string[];
       totalExtracted = data.total_frames_extracted as number;
       cameraId = data.camera_id as string;
       setVideoTotalFrames(totalExtracted);
-      updateStage("extract", { status: "completed" });
+      updateStage("extract", { status: "completed", durationMs: Math.round(performance.now()) });
     } catch (e) {
       updateStage("extract", { status: "failed", error: String(e) });
-      setError("Frame extraction failed. Is the backend running?");
+      setError(`Frame extraction failed: ${String(e)}`);
       setIsRunning(false);
       return;
     }
@@ -364,10 +377,16 @@ export default function App() {
     for (let i = 0; i < framesB64.length; i++) {
       const src = framesB64[i];
       const base64 = src.split(",")[1];
-      setVideoProgress(`Analyzing frame ${i + 1} / ${framesB64.length}…`);
+      // Timestamp in video = frame index / extraction fps
+      const videoTimeSec = Math.round(i / extractFps);
+      const videoTimeLabel = `${String(Math.floor(videoTimeSec / 60)).padStart(2,"0")}:${String(videoTimeSec % 60).padStart(2,"0")}`;
+      setVideoProgress(`Analyzing frame ${i + 1} / ${framesB64.length} (${videoTimeLabel})…`);
 
       let framePredictions: Prediction[] = [];
+      let frameImgSize = { width: 640, height: 640 };
+
       try {
+        // Run the same three detection models as the image pipeline
         const results = await Promise.allSettled([
           callRoboflow(MODELS.helmet, base64),
           callRoboflow(MODELS.triple, base64),
@@ -375,7 +394,11 @@ export default function App() {
         ]);
         results.forEach(r => {
           if (r.status === "fulfilled" && r.value) {
+            if (r.value.image?.width && r.value.image?.height) {
+              frameImgSize = { width: r.value.image.width, height: r.value.image.height };
+            }
             const filtered = r.value.predictions.filter((p: Prediction) => {
+              // Filter low-confidence phone detections (same threshold as image pipeline)
               const isPhone = p.class.toLowerCase().includes("phone") || p.class.toLowerCase().includes("mobile");
               return !(isPhone && p.confidence < 0.45);
             });
@@ -384,30 +407,52 @@ export default function App() {
         });
       } catch { /* skip frame on error */ }
 
+      // License plate OCR — same as the image pipeline
+      let plateTxt = "";
+      try {
+        // Convert base64 data-URI back to a Blob to POST to the backend
+        const byteStr = atob(base64);
+        const arr = new Uint8Array(byteStr.length);
+        for (let b = 0; b < byteStr.length; b++) arr[b] = byteStr.charCodeAt(b);
+        const blob = new Blob([arr], { type: "image/jpeg" });
+        const lpForm = new FormData();
+        lpForm.append("file", blob, `frame_${i}.jpg`);
+        const lpRes = await fetch("/api/license-plate/detect", { method: "POST", body: lpForm });
+        if (lpRes.ok) {
+          const lpData = await lpRes.json();
+          // Pull OCR text from any plate prediction
+          const plateTexts = (lpData.predictions as Prediction[]).map(p => p.ocr_text).filter(Boolean);
+          plateTxt = plateTexts[0] ?? "";
+          // Add plate predictions to frame predictions
+          (lpData.predictions as Prediction[]).forEach((p: Prediction) => {
+            framePredictions.push({ ...p, class: p.class || "license_plate" });
+          });
+        }
+      } catch { /* LP OCR is best-effort */ }
+
       const now = new Date().toISOString();
-      const violPreds = framePredictions.filter(p => {
-        const k = p.class.toLowerCase();
-        return k.includes("no-helmet") || k.includes("no helmet") ||
-          k.includes("triple") || k.includes("more_than_two") ||
-          k.includes("phone") || k.includes("mobile") ||
-          k.includes("seatbelt");
-      });
+      // Only flag actual violations (not compliant helmet/seatbelt detections)
+      const violPreds = framePredictions.filter(p => isActualViolation(p.class));
 
       const frameRecords: ViolationRecord[] = violPreds.map(p => {
         const { label, vehicle } = classifyViolation(p.class);
         return {
           id: uid(),
+          // Use video timestamp (MM:SS) embedded in the ISO timestamp comment
           timestamp: now,
           violationType: classifyViolation(p.class).type as any,
+          // Append video timestamp to label for the timeline
           violationLabel: label,
           confidence: Math.round(p.confidence * 100),
           vehicleType: vehicle,
-          plateNumber: "",
+          plateNumber: plateTxt,
           imageId: imgId,
           processingTimeMs: 0,
           status: "Completed" as const,
           boundingBox: { x: p.x, y: p.y, width: p.width, height: p.height },
-        };
+          // Store video time for the timeline display
+          videoTime: videoTimeLabel,
+        } as ViolationRecord & { videoTime: string };
       });
 
       allSavedRecords.push(...frameRecords);
@@ -417,9 +462,11 @@ export default function App() {
         predictions: framePredictions,
         records: frameRecords,
         hasViolation: violPreds.length > 0,
+        imageSize: frameImgSize,
+        // Store the video timestamp for display
+        videoTime: videoTimeLabel,
       });
 
-      // Update frames progressively so user sees results as they come
       setVideoFrames([...builtFrames]);
     }
 
@@ -569,7 +616,32 @@ export default function App() {
                       muted
                     />
                     {!isRunning && !videoComplete && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/40 backdrop-blur-[2px] px-6">
+                        {/* FPS selector */}
+                        <div className="bg-white/95 rounded-2xl px-5 py-4 shadow-xl w-full max-w-xs">
+                          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Extraction Rate</p>
+                          <div className="flex items-center gap-2 justify-center flex-wrap">
+                            {[0.5, 1, 2, 4].map(v => (
+                              <button
+                                key={v}
+                                onClick={() => setExtractFps(v)}
+                                className={`px-3.5 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                                  extractFps === v
+                                    ? "bg-indigo-600 text-white border-indigo-600"
+                                    : "bg-white text-slate-700 border-slate-200 hover:border-indigo-400"
+                                }`}
+                              >
+                                {v} fps
+                              </button>
+                            ))}
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-2.5 text-center">
+                            {extractFps === 0.5 && "1 frame every 2 seconds — fastest, best for long clips"}
+                            {extractFps === 1  && "1 frame per second — recommended balance"}
+                            {extractFps === 2  && "2 frames per second — more detail, slower analysis"}
+                            {extractFps === 4  && "4 frames per second — high detail, use for short clips"}
+                          </p>
+                        </div>
                         <button
                           onClick={runVideoPipeline}
                           className="inline-flex items-center gap-2 bg-white text-slate-900 px-6 py-3 rounded-xl font-semibold text-sm shadow-lg hover:scale-105 transition-transform"
@@ -705,9 +777,9 @@ export default function App() {
             />
             <VideoFramePlayer
               frames={videoFrames}
-              imageSize={{ width: 640, height: 640 }}
               totalExtractedFrames={videoTotalFrames}
               videoFileName={file?.name ?? "video"}
+              extractFps={extractFps}
             />
             <div className="mt-6 flex justify-center">
               <button onClick={resetPipeline} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">

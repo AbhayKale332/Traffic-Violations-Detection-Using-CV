@@ -29,7 +29,21 @@ def preprocess_frame(img_path):
     
     cv2.imwrite(str(img_path), final_output)
 
-def extract_frames(camera_id, video_path, output_dir=BASE_DIR / "data" / "frames"):
+def extract_frames(camera_id, video_path, fps: float = 1.0, output_dir=BASE_DIR / "data" / "frames"):
+    """
+    Extract frames from a video at the given fps rate, then apply the full
+    preprocessing pipeline (gamma correction, CLAHE, bilateral filter, unsharp mask)
+    to each frame.
+
+    Args:
+        camera_id:  Unique ID used to namespace the output folder.
+        video_path: Path to the source video file.
+        fps:        Frames per second to extract. Default 1.0.
+        output_dir: Root directory where frame folders are created.
+
+    Returns:
+        dict with folder_path, frame_name, extension, count, and fps_used.
+    """
     output_dir = Path(output_dir) / camera_id
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -39,13 +53,13 @@ def extract_frames(camera_id, video_path, output_dir=BASE_DIR / "data" / "frames
     # Define the output pattern (e.g., frame_0001.jpg)
     output_pattern = str(output_dir / f"{FRAME_NAME}_%04d.{EXTENSION}")
 
-    # Build the FFmpeg command
+    # Build the FFmpeg command with the user-supplied fps
     command = [
         "ffmpeg",
         "-i", str(video_path),
-        "-vf", "fps=1",
+        "-vf", f"fps={fps}",
         "-q:v", "5",
-        "-hide_banner", "-loglevel", "error", # Keep terminal output clean
+        "-hide_banner", "-loglevel", "error",
         output_pattern
     ]
 
@@ -53,7 +67,7 @@ def extract_frames(camera_id, video_path, output_dir=BASE_DIR / "data" / "frames
     subprocess.run(command, check=True)
 
     # Post-process extracted frames
-    frames = list(output_dir.glob(f"*.{EXTENSION}"))
+    frames = sorted(Path(output_dir).glob(f"*.{EXTENSION}"))
     for frame_path in frames:
         preprocess_frame(frame_path)
 
@@ -63,5 +77,6 @@ def extract_frames(camera_id, video_path, output_dir=BASE_DIR / "data" / "frames
         "folder_path": str(output_dir),
         "frame_name": FRAME_NAME,
         "extension": EXTENSION,
-        "count": saved_count
+        "count": saved_count,
+        "fps_used": fps,
     }

@@ -7,23 +7,21 @@ import type { Prediction, ViolationRecord } from "../types";
 
 // ── Types ──────────────────────────────────────────────────────────
 export type VideoFrame = {
-  /** base64 data-URI of the (already-preprocessed) frame image */
   src: string;
-  /** Frame index (0-based) */
   index: number;
-  /** Roboflow predictions for this frame */
   predictions: Prediction[];
-  /** Derived violation records for this frame */
   records: ViolationRecord[];
-  /** True if any violation was found on this frame */
   hasViolation: boolean;
+  imageSize: { width: number; height: number };
+  /** Video timestamp for this frame, e.g. "00:12" */
+  videoTime: string;
 };
 
 type Props = {
   frames: VideoFrame[];
-  imageSize: { width: number; height: number };
   totalExtractedFrames: number;
   videoFileName: string;
+  extractFps: number;
 };
 
 // ── Color helpers ──────────────────────────────────────────────────
@@ -94,13 +92,10 @@ function ViolationBadge({ record }: { record: ViolationRecord }) {
 }
 
 // ── Frame Canvas (draws bounding boxes over the frame image) ───────
-function FrameCanvas({
-  frame,
-  imageSize,
-}: {
-  frame: VideoFrame;
-  imageSize: { width: number; height: number };
-}) {
+// Uses the image's own naturalWidth/naturalHeight as the coordinate
+// space — this always matches what Roboflow returns regardless of the
+// source video resolution.
+function FrameCanvas({ frame }: { frame: VideoFrame }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -125,8 +120,14 @@ function FrameCanvas({
       offsetX = (img.clientWidth - renderWidth) / 2;
     }
 
-    const scaleX = renderWidth / imageSize.width;
-    const scaleY = renderHeight / imageSize.height;
+    // Use the image's own natural dimensions as the Roboflow coordinate space.
+    // frame.imageSize (from Roboflow response) should equal naturalWidth/Height,
+    // but natural dimensions are available directly from the DOM element.
+    const coordW = frame.imageSize.width  || img.naturalWidth;
+    const coordH = frame.imageSize.height || img.naturalHeight;
+
+    const scaleX = renderWidth / coordW;
+    const scaleY = renderHeight / coordH;
 
     canvas.width = img.clientWidth;
     canvas.height = img.clientHeight;
@@ -167,7 +168,7 @@ function FrameCanvas({
     ctx.fillRect(canvas.width - tw2 - 28, canvas.height - 30, tw2 + 18, 22);
     ctx.fillStyle = "#fff";
     ctx.fillText(wmText, canvas.width - tw2 - 19, canvas.height - 13);
-  }, [frame, imageSize]);
+  }, [frame]);
 
   useEffect(() => {
     draw();
@@ -206,9 +207,9 @@ function FrameCanvas({
 // ── Main VideoFramePlayer ──────────────────────────────────────────
 export default function VideoFramePlayer({
   frames,
-  imageSize,
   totalExtractedFrames,
   videoFileName,
+  extractFps,
 }: Props) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -244,10 +245,68 @@ export default function VideoFramePlayer({
     setActiveViolationId(violationId);
   }
 
-  // All violations across all frames for the timeline
-  const allViolations = frames.flatMap((f) =>
-    f.records.map((r) => ({ ...r, frameIndex: f.index }))
-  );
+  // ── Violation grouping ─────────────────────────────────────────
+  // Step 1: flatten all violations, but deduplicate same-type within a frame
+  // (e.g. two "No Helmet" boxes in one frame → keep only the highest-confidence one)
+  const flatViolations = frames.flatMap((f) => {
+    const seen = new Map<string, ViolationRecord & { frameIndex: number }>();
+    for (const r of f.records) {
+      const key = r.violationType;
+      const existing = seen.get(key);
+      if (!existing || r.confidence > existing.confidence) {
+        seen.set(key, { ...r, frameIndex: f.index });
+      }
+    }
+    return [...seen.values()];
+  });
+
+  // Step 2: group consecutive same-type violations into one event.
+  // Two violations are considered the "same incident" if they are the same type
+  // and the frame gap between them is ≤ GAP_THRESHOLD.
+  const GAP_THRESHOLD = 3;
+  type ViolationEvent = {
+    id: string;
+    violationType: string;
+    violationLabel: string;
+    firstFrame: number;
+    lastFrame: number;
+    firstTime: string;
+    lastTime: string;
+    maxConfidence: number;
+    bestPlate: string;
+  };
+
+  const groupedEvents: ViolationEvent[] = [];
+  // Sort by frameIndex so grouping is sequential
+  const sorted = [...flatViolations].sort((a, b) => a.frameIndex - b.frameIndex);
+  for (const v of sorted) {
+    const frameObj = frames.find(f => f.index === v.frameIndex);
+    const timeLabel = frameObj?.videoTime ?? `~${v.frameIndex}s`;
+    const last = groupedEvents[groupedEvents.length - 1];
+    if (
+      last &&
+      last.violationType === v.violationType &&
+      v.frameIndex - last.lastFrame <= GAP_THRESHOLD
+    ) {
+      // Extend existing event
+      last.lastFrame = v.frameIndex;
+      last.lastTime = timeLabel;
+      if (v.confidence > last.maxConfidence) last.maxConfidence = v.confidence;
+      if (v.plateNumber && !last.bestPlate) last.bestPlate = v.plateNumber;
+    } else {
+      groupedEvents.push({
+        id: v.id,
+        violationType: v.violationType,
+        violationLabel: v.violationLabel,
+        firstFrame: v.frameIndex,
+        lastFrame: v.frameIndex,
+        firstTime: timeLabel,
+        lastTime: timeLabel,
+        maxConfidence: v.confidence,
+        bestPlate: v.plateNumber || "",
+      });
+    }
+  }
 
   // Scrubber change
   function handleScrub(e: React.ChangeEvent<HTMLInputElement>) {
@@ -272,15 +331,15 @@ export default function VideoFramePlayer({
           <span className="text-xs font-semibold truncate max-w-[180px]">{videoFileName}</span>
         </div>
         <span className="text-xs text-slate-500 bg-white border border-slate-100 rounded-full px-3 py-1.5">
-          {frames.length} frames analyzed
+          {frames.length} frames analyzed @ {extractFps}fps
         </span>
         <span className="text-xs text-slate-500 bg-white border border-slate-100 rounded-full px-3 py-1.5">
           {totalExtractedFrames} total extracted @ 1fps
         </span>
-        {allViolations.length > 0 ? (
+        {groupedEvents.length > 0 ? (
           <span className="text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-full px-3 py-1.5 flex items-center gap-1.5">
             <AlertTriangle className="h-3 w-3" />
-            {allViolations.length} violation{allViolations.length !== 1 ? "s" : ""} found
+            {groupedEvents.length} violation{groupedEvents.length !== 1 ? "s" : ""} found
           </span>
         ) : (
           <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1.5 flex items-center gap-1.5">
@@ -294,7 +353,7 @@ export default function VideoFramePlayer({
       <div className="grid lg:grid-cols-[1fr_320px] gap-6">
         {/* ── Left: Frame canvas + controls ─────────────────────── */}
         <div className="space-y-4">
-          <FrameCanvas frame={currentFrame} imageSize={imageSize} />
+          <FrameCanvas frame={currentFrame} />
 
           {/* Controls */}
           <div className="bg-white rounded-xl border border-slate-100 p-4 space-y-3">
@@ -418,10 +477,10 @@ export default function VideoFramePlayer({
               <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
                 Violation Timeline
               </h3>
-              <span className="text-xs text-slate-400">{allViolations.length} events</span>
+              <span className="text-xs text-slate-400">{groupedEvents.length} incident{groupedEvents.length !== 1 ? "s" : ""}</span>
             </div>
 
-            {allViolations.length === 0 ? (
+            {groupedEvents.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-center px-4">
                 <CheckCircle className="h-8 w-8 text-emerald-400 mb-3" />
                 <p className="text-sm font-semibold text-slate-700">All clear</p>
@@ -431,33 +490,43 @@ export default function VideoFramePlayer({
               </div>
             ) : (
               <div className="divide-y divide-slate-50 max-h-[520px] overflow-y-auto">
-                {allViolations.map((v) => {
-                  const isActive = activeViolationId === v.id;
+                {groupedEvents.map((evt) => {
+                  const isActive = activeViolationId === evt.id;
+                  const isSingleFrame = evt.firstFrame === evt.lastFrame;
+                  const timeRange = isSingleFrame
+                    ? evt.firstTime
+                    : `${evt.firstTime} – ${evt.lastTime}`;
                   return (
                     <button
-                      key={v.id}
-                      onClick={() => jumpToViolationFrame(v.frameIndex, v.id)}
+                      key={evt.id}
+                      onClick={() => jumpToViolationFrame(evt.firstFrame, evt.id)}
                       className={`w-full text-left px-4 py-3 flex items-start gap-3 transition-colors hover:bg-slate-50 ${
                         isActive ? "bg-indigo-50" : ""
                       }`}
                     >
                       <div className="shrink-0 mt-0.5">
-                        <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-600">
-                          F{v.frameIndex + 1}
+                        <div className="w-10 h-10 rounded-lg bg-slate-100 flex flex-col items-center justify-center">
+                          <span className="text-[9px] font-bold text-slate-500 leading-none">F{evt.firstFrame + 1}</span>
+                          <span className="text-[8px] text-slate-400 font-mono leading-none mt-0.5">{evt.firstTime}</span>
                         </div>
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-slate-900 truncate">{v.violationLabel}</p>
+                        <p className="text-sm font-semibold text-slate-900 truncate">{evt.violationLabel}</p>
                         <div className="flex items-center gap-2 mt-1">
-                          <span className="text-xs text-slate-500">{v.confidence}% confidence</span>
+                          <span className="text-xs text-slate-500">{evt.maxConfidence}% conf.</span>
                           <span className="text-xs text-slate-300">·</span>
-                          <span className="text-xs text-slate-500">~{v.frameIndex}s</span>
+                          <span className="text-xs font-mono text-indigo-600">{timeRange}</span>
                         </div>
-                        {v.plateNumber && (
-                          <p className="text-xs text-indigo-600 font-mono mt-0.5">{v.plateNumber}</p>
+                        {!isSingleFrame && (
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            Across {evt.lastFrame - evt.firstFrame + 1} frames
+                          </p>
+                        )}
+                        {evt.bestPlate && (
+                          <p className="text-xs text-amber-600 font-mono font-semibold mt-0.5">🔵 {evt.bestPlate}</p>
                         )}
                       </div>
-                      <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 mt-1 transition-transform ${isActive ? "text-indigo-500 translate-x-0.5" : ""}`} />
+                      <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 mt-2 transition-transform ${isActive ? "text-indigo-500 translate-x-0.5" : ""}`} />
                     </button>
                   );
                 })}
