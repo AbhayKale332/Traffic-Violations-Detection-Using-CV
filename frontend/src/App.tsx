@@ -29,7 +29,7 @@ import { loadRecords, appendRecords, computeAnalytics, clearRecords, loadEvaluat
 // ── Roboflow API config ────────────────────────────────────────────
 const RF_KEY = "8uvtxZId3oOxVg80LO8f";
 const MODELS = {
-  helmet: "helmet-detection-yolov8/1",
+  helmet: "helmet-detection-zktr7/5",
   triple: "3riders/2",
   seatbelt: "seat_belt-and-mobile-vbve5/1",
 };
@@ -240,6 +240,21 @@ export default function App() {
       }
     });
 
+    const hasHelmet = mergedPredictions.some(p => p.class.toLowerCase().includes("helmet") && !p.class.toLowerCase().includes("no"));
+    if (!hasHelmet) {
+      const persons = mergedPredictions.filter(p => p.class.toLowerCase() === "person" || p.class.toLowerCase() === "rider" || p.class.toLowerCase() === "motorcyclist");
+      persons.forEach(personPred => {
+        mergedPredictions.push({
+          class: "no helmet",
+          confidence: personPred.confidence,
+          x: personPred.x,
+          y: personPred.y,
+          width: personPred.width,
+          height: personPred.height,
+        });
+      });
+    }
+
     // Stage 5: License plate OCR
     try {
       updateStage("license", { status: "processing" });
@@ -406,6 +421,21 @@ export default function App() {
           }
         });
       } catch { /* skip frame on error */ }
+
+      const frameHasHelmet = framePredictions.some(p => p.class.toLowerCase().includes("helmet") && !p.class.toLowerCase().includes("no"));
+      if (!frameHasHelmet) {
+        const persons = framePredictions.filter(p => p.class.toLowerCase() === "person" || p.class.toLowerCase() === "rider" || p.class.toLowerCase() === "motorcyclist");
+        persons.forEach(personPred => {
+          framePredictions.push({
+            class: "no helmet",
+            confidence: personPred.confidence,
+            x: personPred.x,
+            y: personPred.y,
+            width: personPred.width,
+            height: personPred.height,
+          });
+        });
+      }
 
       // License plate OCR — same as the image pipeline
       let plateTxt = "";

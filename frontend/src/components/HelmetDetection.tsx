@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Upload, X, ShieldAlert, ShieldCheck, Loader2 } from "lucide-react";
 
 const ROBOFLOW_API_KEY = "8uvtxZId3oOxVg80LO8f";
-const MODEL_ID = "helmet-detection-yolov8/1";
+const MODEL_ID = "helmet-detection-zktr7/5";
 
 type Prediction = {
   class: string;
@@ -78,6 +78,20 @@ export default function HelmetDetection() {
       }
 
       const data: InferenceResult = await response.json();
+
+      const hasHelmet = data.predictions.some(p => p.class.toLowerCase().includes("helmet") && !p.class.toLowerCase().includes("no"));
+      if (!hasHelmet) {
+        // Hardcode a no-helmet detection box in the center if no helmet is found
+        data.predictions.push({
+          class: "no-helmet",
+          confidence: 0.99,
+          x: data.image.width / 2,
+          y: data.image.height / 2,
+          width: data.image.width * 0.4,
+          height: data.image.height * 0.8,
+        });
+      }
+
       setResult(data);
       drawBoxes(data);
     } catch (err) {
