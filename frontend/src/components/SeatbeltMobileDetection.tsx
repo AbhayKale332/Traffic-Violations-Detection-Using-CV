@@ -176,6 +176,11 @@ export default function SeatbeltMobileDetection() {
       p.class.toLowerCase().includes("windshield")
     ).length ?? 0;
 
+  const seatbeltCount =
+    result?.predictions.filter((p) =>
+      p.class.toLowerCase().includes("seatbelt")
+    ).length ?? 0;
+
   const hasPersonOrDetails = result?.predictions.some(p => 
     !p.class.toLowerCase().includes("windshield")
   ) ?? false;
@@ -315,6 +320,19 @@ export default function SeatbeltMobileDetection() {
                   <h4 className="text-sm font-semibold text-purple-900">Tinted Windows Detected</h4>
                   <p className="text-xs text-purple-700 mt-0.5">
                     A windshield was found, but no driver or interior details are visible. This usually indicates heavy window tinting.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* No Seatbelt Alert */}
+            {seatbeltCount === 0 && (
+              <div className="rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-orange-600 shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="text-sm font-semibold text-orange-900">Not Wearing A Seatbelt</h4>
+                  <p className="text-xs text-orange-700 mt-0.5">
+                    No seatbelt was detected in this image, indicating a potential violation.
                   </p>
                 </div>
               </div>
