@@ -17,129 +17,143 @@
 
 ## 📖 What it does
 
-**Traffic Violation AI** is a comprehensive proof-of-concept application built to automate the detection of traffic violations from video feeds or images. Utilizing state-of-the-art object detection and optical character recognition (OCR) models, it identifies common infractions and logs actionable evidence.
+**Traffic Violation AI** is a comprehensive AI-powered application designed to automate the detection, classification, documentation, and reporting of traffic violations from surveillance footage. Designed for high accuracy, scalability, and robustness in real-world conditions, it identifies common infractions and creates actionable evidence records automatically.
 
-### 🎯 Key Features & Benefits
+### ⚠️ Problems Addressed
+- **Massive Image Volume:** Thousands of images per camera daily make manual review impossible.
+- **Delayed Enforcement:** Violations discovered hours or days later.
+- **Human Errors:** Missed violations, fatigue-related mistakes, and inconsistent judgments.
+- **Difficult Conditions:** Reduced accuracy due to rain, nighttime environments, and motion blur.
+- **Missing Plates:** Vehicle identification challenges when number plates are unreadable.
 
-- 🏍️ **Helmet Detection:** Automatically flags riders not wearing helmets.
-- 👨‍👩‍👦 **Triple Rider Detection:** Identifies motorcycles carrying more than the legal limit of passengers.
-- 🚗 **Seatbelt & Mobile Phone Detection:** Spots drivers using their phones or failing to wear seatbelts.
-- 📸 **License Plate OCR:** Extracts text from license plates using PaddleOCR or EasyOCR with built-in preprocessing for high accuracy.
-- 📊 **End-to-End Pipeline Demo:** Upload traffic videos for frame-by-frame analysis, complete with analytics, charts, and interactive evidence review.
-- ⚡ **Modern Stack:** Blazing fast React+Vite frontend powered by a robust Python FastAPI backend.
+### 🎯 Key Features & Real-world Impact
+- **Road Safety Impact:** Reduces accident risks and improves compliance with traffic laws.
+- **Administrative Efficiency:** Drastically lowers manpower costs and evidence management burden.
+- **Automated Evidence Generation:** Captures violation frames, annotates bounding boxes, and securely logs timestamps/vehicle details.
+- **Dashboard Analytics:** Aggregates statistics, visualizes violation trends over time, and provides searchable records for authorities.
 
-This tool is incredibly useful for civic tech projects, smart city hackathons, or automated traffic enforcement systems looking to reduce human monitoring effort.
+---
+
+## ⚙️ Advanced Image Preprocessing Pipeline
+To handle extreme weather, motion blur, and low-light scenarios, we apply a robust preprocessing pipeline before running inference:
+1. **Normalization:** Images resized to 640x640 and normalized for consistent YOLO inference.
+2. **Low Light & Shadow Fix:** Gamma Correction and CLAHE (Contrast Limited Adaptive Histogram Equalization) applied to restore visibility.
+3. **Weather & Blur Reduction:** Bilateral filtering reduces rain/sensor noise, followed by Unsharp Masking to correct motion blur.
+
+<p align="center">
+  <img src="docs/images/preprocess_1.png" alt="Preprocessing Pipeline 1" width="45%" />
+  <img src="docs/images/preprocess_2.png" alt="Preprocessing Pipeline 2" width="45%" />
+</p>
 
 ---
 
 ## 📸 Demo & Features Deep-Dive
 
-### 🏍️ Helmet Detection
-**How it works:** The system analyzes motorcycle riders to verify if they are wearing helmets. It identifies motorcycles, isolates the rider's region, and runs it through a specialized computer vision model trained to distinguish between heads with helmets and those without.
+### 🏍️ Helmet Non-Compliance
+**How it works:** Analyzes motorcycle riders to verify helmet usage. Identifies motorcycles, isolates riders, and uses a specialized model to detect unhelmeted heads.
 | Input Image | Detection Output |
 | :---: | :---: |
-| *[Add input image here]* | *[Add output image here]* |
+| <img src="docs/images/helmet_input.png" alt="Helmet Input" width="300" /> | <img src="docs/images/helmet_output.png" alt="Helmet Output" width="300" /> |
 
-### 👨‍👩‍👦 Triple Rider Detection
-**How it works:** To enforce capacity limits on motorcycles, this feature counts the number of riders on a single two-wheeler. The object detection model identifies the bounding box of the motorcycle and maps the number of detected persons overlapping with that vehicle. If the count exceeds two, it flags a violation.
+### 👨‍👩‍👦 Triple Riding
+**How it works:** Enforces capacity limits on two-wheelers by counting the number of riders overlapping with the motorcycle's bounding box. Exceeding two passengers flags a violation.
 | Input Image | Detection Output |
 | :---: | :---: |
-| *[Add input image here]* | *[Add output image here]* |
+| <img src="docs/images/triple_input.png" alt="Triple Riding Input" width="300" /> | <img src="docs/images/triple_output.png" alt="Triple Riding Output" width="300" /> |
 
 ### 🚗 Seatbelt & Mobile Phone Detection
-**How it works:** This pipeline is focused on the driver's seat. It scans the windshield area of detected cars to identify if the driver is securely fastened with a seatbelt and monitors for mobile phone usage while at the wheel. The system isolates the driver's upper body region and classifies the presence of a seatbelt or a phone.
-| Input Image | Detection Output |
+**How it works:** Scans the windshield area of detected cars to monitor driver compliance. Identifies if the driver is fastened with a seatbelt and flags mobile phone usage while driving.
+| Seatbelt Detection | Phone Usage Detection |
 | :---: | :---: |
-| *[Add input image here]* | *[Add output image here]* |
+| <img src="docs/images/seatbelt_output.png" alt="Seatbelt Output" width="300" /> | <img src="docs/images/phone_output.png" alt="Phone Output" width="300" /> |
 
-### 📸 License Plate OCR
-**How it works:** Once a traffic violation is confirmed, the system locates the vehicle's license plate. It extracts the cropped plate image, applies advanced image preprocessing (like grayscale conversion, adaptive thresholding, and morphological operations), and passes it to an Optical Character Recognition (OCR) engine to accurately read the alphanumeric text.
-| Input Image | Detection Output |
+### 📸 License Plate OCR & Cropping
+**How it works:** Once a violation is confirmed, the system extracts the license plate crop, applying preprocessing (grayscale, adaptive thresholding) before running an OCR engine (PaddleOCR/EasyOCR) to accurately extract alphanumeric text. A minimal crop is saved for evidence.
+| Input Crop | OCR Extraction Output |
 | :---: | :---: |
-| *[Add input image here]* | *[Add output image here]* |
+| <img src="docs/images/ocr_input.png" alt="OCR Input" width="300" /> | <img src="docs/images/ocr_output.png" alt="OCR Output" width="300" /> |
+
+### 🛑 Stop-line Crossing & No-Parking Zones
+- **Stop-line Crossing:** Automatically captures frames and generates evidence when vehicles cross designated stop-lines at signals.
+- **No-Parking Detection:** Identifies stationary vehicles in restricted zones, tracks their parking duration, and logs illegal parking evidence automatically.
+<p align="center">
+  <img src="docs/images/stopline.png" alt="Stop-line Violation" width="45%" />
+  <img src="docs/images/noparking.png" alt="No Parking Violation" width="45%" />
+</p>
+
+### 🔍 Vehicle Identification Without Number Plates
+**How it works:** Identifying a vehicle without a visible number plate is a significant challenge. Our solution leverages visual embeddings and Facebook's similarity search algorithm (FAISS) to instantly find similar vehicles across millions of images, reducing manual investigation efforts.
+
+---
+
+## 📊 Analytics & Reporting Dashboard
+The application features a comprehensive dashboard for traffic authorities:
+- Violation frequency statistics.
+- Heatmap-based traffic risk assessment and trends over time.
+- Searchable violation records categorized by violation type.
+
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="Dashboard Statistics" width="80%" />
+</p>
+
+---
+
+## 📈 Evaluation & Future Scope
+The models are evaluated on metrics like **Accuracy, Precision, Recall, F1-Score, and mAP**.
+
+**Future Developments:**
+- Cloud-based tamper-proof evidence management.
+- Real-time city-wide deployment on edge devices.
+- Automated challan (ticket) generation.
+- Fine-tuning YOLO models on larger, localized, real-world challan image datasets.
 
 ---
 
 ## 🚀 How to get started
 
 ### Prerequisites
-
-Ensure you have the following installed on your system:
 - **Python 3.10+**
 - **Node.js 18+** & **npm**
-- **FFmpeg** (Required for video frame extraction: `sudo apt install ffmpeg` on Ubuntu/Debian, `brew install ffmpeg` on macOS)
+- **FFmpeg** (Required for video frame extraction)
 
 ### 1. Clone the repository
-
 ```bash
 git clone https://github.com/akashch1512/Traffic-Violations-Using-Computer-Vision.git
 cd Traffic-Violations-Using-Computer-Vision
 ```
 
 ### 2. Backend Setup
-
-The backend handles all AI inferences, frame extraction, and OCR.
-
 ```bash
 cd backend
-
-# Create and activate a virtual environment
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Start the FastAPI server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-> **Note:** The API health check is available at `http://localhost:8000/` and interactive Swagger docs at `http://localhost:8000/docs`. By default, PaddleOCR is enabled. You can switch to EasyOCR in `backend/app/api/license_plate.py`.
+> **Note:** API health check available at `http://localhost:8000/`. Interactive docs at `http://localhost:8000/docs`.
 
 ### 3. Frontend Setup
-
-The frontend provides the interactive dashboard and video analysis UI.
-
 ```bash
-# Open a new terminal instance
 cd frontend
-
-# Install Node dependencies
 npm install
-
-# Start the Vite development server
 npm run dev -- --port 5173
 ```
 > Access the web application at **[http://localhost:5173/](http://localhost:5173/)**.
 
 ### 💡 Usage Example
-
 1. Open the frontend URL in your browser.
-2. Go to the **Pipeline Demo** or **Traffic Analysis** tab.
-3. Upload a sample `.mp4` traffic clip.
-4. Click **Analyze video**. The backend will extract frames, run the YOLO models and OCR, and return a comprehensive summary of vehicles detected, violations found, and license plates matched!
+2. Upload a sample `.mp4` traffic clip.
+3. Click **Analyze video** to extract frames, run YOLO/OCR, and generate violation evidence.
 
 ---
 
 ## 🤝 Who maintains and contributes
-
-This project is actively maintained. We welcome contributions from the open-source community—whether it's improving OCR accuracy, adding new YOLO classes, or refining the React dashboard!
-
 - **Maintainer:** [Abhay Kale](https://github.com/AbhayKale332) & [Akash Chaudhari](https://github.com/akashch1512)
-- **Contributing:** We love pull requests! Please refer to `docs/CONTRIBUTING.md` (if available) or simply open an issue to discuss proposed changes before submitting a PR.
-  1. Fork the Project
-  2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-  3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-  4. Push to the Branch (`git push origin feature/AmazingFeature`)
-  5. Open a Pull Request
-
----
+- **Contributing:** We love pull requests! Please open an issue to discuss proposed changes before submitting a PR.
 
 ## ❓ Where to get help
-
-Having trouble setting up the environment or modifying a model?
-- **Issues:** Check the [GitHub Issues](https://github.com/akashch1512/Traffic-Violations-Using-Computer-Vision/issues) tab to see if your problem has been discussed.
-- **Discussions:** Use the GitHub Discussions board for general questions and architecture discussions.
-- **Documentation:** For backend endpoint details, visit the auto-generated Swagger UI at `http://localhost:8000/docs` while the server is running.
+- **Issues:** Check the [GitHub Issues](https://github.com/akashch1512/Traffic-Violations-Using-Computer-Vision/issues) tab.
+- **Documentation:** Visit the Swagger UI at `http://localhost:8000/docs` while the server is running.
 
 <div align="center">
   <p><i>Built with ❤️ for safer roads.</i></p>
