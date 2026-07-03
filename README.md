@@ -51,39 +51,44 @@ To handle extreme weather, motion blur, and low-light scenarios, we apply a robu
 
 ### 🏍️ Helmet Non-Compliance
 **How it works:** Analyzes motorcycle riders to verify helmet usage. Identifies motorcycles, isolates riders, and uses a specialized model to detect unhelmeted heads.
-**Example:**
+**Examples:**
 <p align="center">
-  <img src="docs/images/helmet_output.png" alt="Helmet Detection Example" width="80%" />
+  <img src="docs/images/helmet_output.png" alt="Helmet Detection Example 1" width="45%" />
+  <img src="docs/images/helmet_example2.png" alt="Helmet Detection Example 2" width="45%" />
 </p>
 
 ### 👨‍👩‍👦 Triple Riding
 **How it works:** Enforces capacity limits on two-wheelers by counting the number of riders overlapping with the motorcycle's bounding box. Exceeding two passengers flags a violation.
-**Example:**
+**Examples:**
 <p align="center">
-  <img src="docs/images/triple_output.png" alt="Triple Riding Example" width="80%" />
+  <img src="docs/images/triple_output.png" alt="Triple Riding Example 1" width="45%" />
+  <img src="docs/images/triple_example2.png" alt="Triple Riding Example 2" width="45%" />
 </p>
 
 ### 🚗 Seatbelt & Mobile Phone Detection
 **How it works:** Scans the windshield area of detected cars to monitor driver compliance. Identifies if the driver is fastened with a seatbelt and flags mobile phone usage while driving.
-**Examples:**
+**Example:**
 <p align="center">
-  <img src="docs/images/seatbelt_output.png" alt="Seatbelt Detection Example" width="45%" />
-  <img src="docs/images/phone_output.png" alt="Phone Usage Example" width="45%" />
+  <img src="docs/images/seatbelt_output.png" alt="Seatbelt & Phone Detection Example" width="80%" />
 </p>
 
 ### 📸 License Plate OCR & Cropping
 **How it works:** Once a violation is confirmed, the system extracts the license plate crop, applying preprocessing (grayscale, adaptive thresholding) before running an OCR engine (PaddleOCR/EasyOCR) to accurately extract alphanumeric text. A minimal crop is saved for evidence.
-**Example:**
+**Examples:**
 <p align="center">
-  <img src="docs/images/ocr_output.png" alt="OCR Extraction Example" width="80%" />
+  <img src="docs/images/ocr_input.png" alt="OCR Input Crop" width="45%" />
+  <img src="docs/images/ocr_output.png" alt="OCR Extraction Output" width="45%" />
 </p>
 
 ### 🛑 Stop-line Crossing & No-Parking Zones
 - **Stop-line Crossing:** Automatically captures frames and generates evidence when vehicles cross designated stop-lines at signals.
 - **No-Parking Detection:** Identifies stationary vehicles in restricted zones, tracks their parking duration, and logs illegal parking evidence automatically.
+**Examples:**
 <p align="center">
   <img src="docs/images/stopline.png" alt="Stop-line Violation" width="45%" />
-  <img src="docs/images/noparking.png" alt="No Parking Violation" width="45%" />
+  <img src="docs/images/stopline_example2.png" alt="Stop-line Details" width="45%" />
+  <br/>
+  <img src="docs/images/noparking.png" alt="No Parking Violation" width="80%" />
 </p>
 
 ### 🔍 Vehicle Identification Without Number Plates
